@@ -1,9 +1,10 @@
 #include "videothread.h"
 #include "decode.h"
 #include <iostream>
+#include <QElapsedTimer>
 using namespace std;
 //打开，不管成功与否都清理
-bool VideoThread::Open(AVCodecParameters *para, VideoCall *call,int width,int height)
+bool VideoThread::Open(AVCodecParameters *para, VideoCall *call,int width,int height,double fps)
 {
     if (!para)return false;
     Clear();
@@ -12,6 +13,10 @@ bool VideoThread::Open(AVCodecParameters *para, VideoCall *call,int width,int he
     synpts = 0;
     //初始化显示窗口
     this->call = call;
+    synpts = 0;
+    this->call = call;
+    this->fps = (fps > 0 && fps < 120) ? fps : 25.0;
+
     if (call)
     {
         call->Init(width, height);
@@ -20,7 +25,7 @@ bool VideoThread::Open(AVCodecParameters *para, VideoCall *call,int width,int he
     int re = true;
     if (!decode->Open(para))
     {
-        cout << "audio XDecode open failed!" << endl;
+        cout << "audio Decode open failed!" << endl;
         re = false;
     }
 
@@ -35,6 +40,10 @@ void VideoThread::SetPause(bool isPause)
 }
 void VideoThread::run()
 {
+    QElapsedTimer timer; //60帧计时器
+    timer.start();
+    const qint64 frameInterval = 1000 / 60;
+
     while (!isExit)
     {
         vmux.lock();
@@ -42,11 +51,14 @@ void VideoThread::run()
         {
             vmux.unlock();
             msleep(5);
+            timer.restart();
             continue;
         }
-        //cout << "synpts = " << synpts << " dpts =" << decode->pts << endl;
+        //动态计算帧间隔：1000ms / 原视频帧率
+        const qint64 frameInterval = static_cast<qint64>(1000.0 / fps);
+
         //音视频同步
-        if (synpts >0 && synpts < decode->pts)
+        if (synpts > 0 && decode->pts > synpts + 40)// 允许40ms误差
         {
             vmux.unlock();
             msleep(1);
@@ -65,6 +77,17 @@ void VideoThread::run()
         {
             AVFrame * frame = decode->Recv();
             if (!frame)break;
+
+            //精确控制帧率，匹配原视频速度
+            qint64 elapsed = timer.elapsed();
+            if (elapsed < frameInterval)
+            {
+                vmux.unlock();
+                msleep(frameInterval - elapsed);
+                vmux.lock();
+            }
+            timer.restart();
+
             //显示视频
             if (call)
             {

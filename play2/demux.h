@@ -42,14 +42,14 @@ public:
     int sampleRate = 0;
     int channels = 0;
 
-
-
-protected:
-    std::mutex mux;
+    //让DemuxThread可以访问ic和videoStream
     //解封装上下文
     AVFormatContext *ic = NULL;
     //音视频索引，读取时区分音视频
     int videoStream = 0;
     int audioStream = 1;
+
+protected:
+    std::mutex mux;
 };
 

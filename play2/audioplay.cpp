@@ -68,7 +68,7 @@ public:
         fmt.setChannelCount(channels);
         fmt.setCodec("audio/pcm");
         fmt.setByteOrder(QAudioFormat::LittleEndian);
-        fmt.setSampleType(QAudioFormat::UnSignedInt);
+        fmt.setSampleType(QAudioFormat::SignedInt);
         mux.lock();
         output = new QAudioOutput(fmt);
         io = output->start(); //开始播放

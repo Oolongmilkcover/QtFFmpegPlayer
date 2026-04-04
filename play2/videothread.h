@@ -2,7 +2,6 @@
 ///解码和显示视频
 struct AVPacket;
 struct AVCodecParameters;
-class XDecode;
 #include <mutex>
 #include <QThread>
 #include "videocall.h"
@@ -14,7 +13,7 @@ public:
     //解码pts，如果接收到的解码数据pts >= seekpts return true 并且显示画面
     virtual bool RepaintPts(AVPacket *pkt, long long seekpts);
     //打开，不管成功与否都清理
-    virtual bool Open(AVCodecParameters *para,VideoCall *call,int width,int height);
+    virtual bool Open(AVCodecParameters *para,VideoCall *call,int width,int height,double fps);
     void run();
     VideoThread();
     virtual ~VideoThread();
@@ -26,7 +25,7 @@ public:
 protected:
     VideoCall *call = 0;
     std::mutex vmux;
-
+    double fps = 25.0;
 
 };
 

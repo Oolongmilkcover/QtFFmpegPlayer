@@ -13,7 +13,7 @@ void AudioThread::Clear()
     if (ap) ap->Clear();
     mux.unlock();
 }
-//停止线程，清理资源
+
 void AudioThread::Close()
 {
     DecodeThread::Close();
@@ -33,14 +33,16 @@ void AudioThread::Close()
         amux.unlock();
     }
 }
-bool AudioThread::Open(AVCodecParameters *para,int sampleRate, int channels)
+
+bool AudioThread::Open(AVCodecParameters *para, int sampleRate, int channels)
 {
-    if (!para)return false;
+    if (!para) return false;
     Clear();
 
     amux.lock();
     pts = 0;
     bool re = true;
+
     if (!res->Open(para, false))
     {
         cout << "Resample open failed!" << endl;
@@ -65,11 +67,9 @@ bool AudioThread::Open(AVCodecParameters *para,int sampleRate, int channels)
 
 void AudioThread::SetPause(bool isPause)
 {
-    //amux.lock();
     this->isPause = isPause;
     if (ap)
         ap->SetPause(isPause);
-    //amux.unlock();
 }
 
 void AudioThread::run()
@@ -77,60 +77,44 @@ void AudioThread::run()
     unsigned char *pcm = new unsigned char[1024 * 1024 * 10];
     while (!isExit)
     {
-        amux.lock();
-        if (isPause)
-        {
-            amux.unlock();
-            msleep(5);
-            continue;
-        }
-
-        //没有数据
-        //if (packs.empty() || !decode || !res || !ap)
-        //{
-        //	mux.unlock();
-        //	msleep(1);
-        //	continue;
-        //}
-
-        //AVPacket *pkt = packs.front();
-        //packs.pop_front();
+        // 1：只在取包时加锁，减少锁的粒度
         AVPacket *pkt = Pop();
-        bool re = decode->Send(pkt);
-        if (!re)
+        if (!pkt)
         {
-            amux.unlock();
             msleep(1);
             continue;
         }
-        //一次send 多次recv
+
+        // 2：解码和播放不在锁里，保证音频流畅
+        bool re = decode->Send(pkt);
+        if (!re)
+        {
+            continue;
+        }
+
+        // 一次send 多次recv
         while (!isExit)
         {
             AVFrame * frame = decode->Recv();
             if (!frame) break;
 
-            //减去缓冲中未播放的时间
+            // 减去缓冲中未播放的时间
             pts = decode->pts - ap->GetNoPlayMs();
 
-            //cout << "audio pts = " << pts << endl;
-
-            //重采样
+            // 重采样
             int size = res->Resampledata(frame, pcm);
-            //播放音频
-            while (!isExit)
+
+            // 3：直接播放，不做复杂等待
+            if (size > 0 && !isPause)
             {
-                if (size <= 0)break;
-                //缓冲未播完，空间不够
-                if (ap->GetFree() < size || isPause)
+                // 只在缓冲区满时才等待
+                while (!isExit && ap->GetFree() < size)
                 {
                     msleep(1);
-                    continue;
                 }
                 ap->Write(pcm, size);
-                break;
             }
         }
-        amux.unlock();
     }
     delete[] pcm;
 }
@@ -141,10 +125,8 @@ AudioThread::AudioThread()
     if (!ap) ap = AudioPlay::Get();
 }
 
-
 AudioThread::~AudioThread()
 {
-    //等待线程退出
     isExit = true;
     wait();
 }
