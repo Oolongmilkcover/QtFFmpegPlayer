@@ -1,7 +1,5 @@
 # 基于 Qt 6.11 + FFmpeg 8.1 的多线程音视频播放器（支持音画同步 / Seek / 实时播放）
 
-一个基于 **Qt6.11 + FFmpeg8.1** 实现的简易多线程音视频播放器，支持音视频同步、拖动进度、暂停播放等功能。
-
 ---
 
 ## 目录
@@ -16,6 +14,7 @@
 - [使用说明](#使用说明)
 - [核心模块说明](#核心模块说明)
 - [音视频同步原理](#音视频同步原理)
+- [常见问题](#常见问题)
 - [未来优化](#未来优化)
 - [总结](#总结)
 
@@ -204,11 +203,11 @@ diff = video_pts - audio_pts
 ### 3. 卡顿
 - Debug 模式性能较差，建议 Release 编译
 ### 4.Release得到的.exe无法在文件夹中使用
-- 打开终端（Qt MinGW / MSVC  或 VS 开发环境）
+- 打开终端（Qt 6.x MinGW / MSVC  或 VS 开发环境）并进入当前文件夹
 ```Bash
 windeployqt QtPlayer.exe
 ```
-- 将ffmpeg/bin内的一下文件拷贝进当前文件夹
+- 若还是失败，将ffmpeg/bin内的一下文件拷贝进当前文件夹
 ```text
 avcodec-xx.dll
 avformat-xx.dll
