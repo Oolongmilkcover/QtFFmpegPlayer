@@ -17,7 +17,7 @@ class VideoThread : public DecodeThread
     Q_OBJECT
 public:
     //同步时间，由外部传入
-    long long synpts = 0;
+    std::atomic<long long> synpts = 0;
 
     explicit VideoThread();
     ~VideoThread();
@@ -31,6 +31,9 @@ public:
 
     //暂停
     void setPause(bool isPause);
+
+    //paint
+    void paint(AVFrame* frame);
 
     void run();
 signals:

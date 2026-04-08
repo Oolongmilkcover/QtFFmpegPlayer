@@ -1,50 +1,31 @@
 #ifndef VIDEOWIDGET_H
 #define VIDEOWIDGET_H
-#include <QOpenGLWidget>
-#include <QOpenGLFunctions>
-#include <QOpenGLShaderProgram>
-#include <QOpenGLShader>
+
+#include <QWidget>
+#include <QImage>
 #include <mutex>
 
-
 struct AVFrame;
-class VideoWidget : public QOpenGLWidget, protected QOpenGLFunctions
+class SwsContext;
+class VideoWidget : public QWidget
 {
     Q_OBJECT
-
 public:
-    void init(int width, int height);
-
-    //不管成功与否都释放frame空间
-    void repaint(AVFrame *frame);
-
-    VideoWidget(QWidget *parent);
+    explicit VideoWidget(QWidget *parent = nullptr);
     ~VideoWidget();
+
+    void init(int w, int h);
+    void setpaint(AVFrame *frame);
+
 protected:
-    //刷新显示
-    void paintGL();
+    void paintEvent(QPaintEvent *event) override;
 
-    //初始化gl
-    void initializeGL();
-
-    // 窗口尺寸变化
-    void resizeGL(int width, int height);
 private:
     std::mutex mux;
-
-    //shader程序
-    QOpenGLShaderProgram program;
-
-    //shader中yuv变量地址
-    GLuint unis[3] = { 0 };
-    //openg的 texture地址
-    GLuint texs[3] = { 0 };
-
-    //材质内存空间
-    unsigned char *datas[3] = { 0 };
-
-    int width = 240;
-    int height = 128;
-
+    QImage img;
+    SwsContext *sws = nullptr;
+    int width = 0;
+    int height = 0;
 };
+
 #endif

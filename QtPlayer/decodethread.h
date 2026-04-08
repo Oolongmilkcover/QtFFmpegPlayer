@@ -39,6 +39,8 @@ public:
     AVFrame* recv();
     //找到解码器并创建配置解码器上下文
     bool codecInit(AVCodecParameters *para);
+
+    void flushBuf();
 public:
     //当前的pts
     long long pts = 0;

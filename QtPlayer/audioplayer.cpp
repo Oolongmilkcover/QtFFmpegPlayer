@@ -14,7 +14,7 @@ private:
     std::mutex m_mutex;
     bool m_isPaused = false;
     //double
-    qreal m_savedVolume = 1.0;
+    qreal m_savedVolume = 0.5;
 
 public:    
     bool open(){
@@ -99,12 +99,12 @@ public:
             return;
 
         if (isPause) {
-            // 暂停：先保存音量，再静音
-            m_savedVolume = m_sink->volume();
-            m_sink->setVolume(0.0);
+            // 暂停
+            m_sink->suspend();
+            if(m_io)m_io->reset();
         } else {
-            //恢复：用保存的音量恢复
-            m_sink->setVolume(m_savedVolume);
+            //恢复
+            m_sink->resume();
         }
 
         m_isPaused = isPause;

@@ -85,15 +85,18 @@ void AudioThread::setPause(bool isPause)
 
 void AudioThread::run()
 {
-    //缓存？
+    qDebug() << "AudioThread running...";
+    //缓存
     unsigned char *pcm = new unsigned char[1024*1024*10];
     while(!m_isExit){
         AVPacket *pkt = pop();
         if (!pkt)
         {
             msleep(1);
+            // qDebug()<<"if (!pkt)";
             continue;
         }
+        // qDebug()<<"m_audioThread->AVPacket *pkt = pop();";
         //自动释放pkt
         bool ret = send(pkt);
         if (!ret)
@@ -109,7 +112,11 @@ void AudioThread::run()
             int size  = resample(frame,pcm);
 
             //播放
-            if(size>0&&!m_isPause){
+            if(size>0){
+                if(m_isPause){
+                    msleep(1);
+                    continue;
+                }
                 //缓冲区满时等待
                 while(!m_isExit && m_auPlayer->getFree()<size){
                     msleep(1);
@@ -119,6 +126,7 @@ void AudioThread::run()
         }
     }
     delete[] pcm;
+    qDebug()<<"end";
 }
 
 

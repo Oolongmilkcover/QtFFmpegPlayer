@@ -45,7 +45,7 @@ private:
     //重采样上下文
     SwrContext* m_swr_ctx = nullptr;
     //是否暂停
-    bool m_isPause = false;
+    std::atomic<bool> m_isPause = false;
 };
 
 #endif // AUDIOTHREAD_H

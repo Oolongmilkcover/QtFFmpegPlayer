@@ -29,6 +29,9 @@ public:
     //暂停
     void setPause(bool isPause);
 
+    //跳转
+    void seek(double pos);
+
     //关闭线程清理资源
     void close();
     void clear();
@@ -36,14 +39,23 @@ public:
 
     //取出pkt,空间需要调用者释放，释放AVPacket对象空间，和数据空间 av_packet_free
     AVPacket* readPkt();
+
+    //返回isPause
+    bool getIsPause();
     
     void run() override;
-signals:
-    
-    
-private:
+
     //pts
     long long pts = 0;
+
+    //总时长ms
+    long long totalMs = 0;
+signals:
+    void disableBtn();
+    void ableBtn();
+    
+private:
+
     //是否暂停
     bool m_isPause = false;
     //是否退出
@@ -55,8 +67,7 @@ private:
     //音视频线程
     VideoThread *m_videoThread = 0;
     AudioThread *m_audioThread = 0;
-    //总时长ms
-    long long m_totalMs = 0;
+
     //音视频流
     int m_videoStream = -1;
     int m_audioStream = -1;
@@ -64,6 +75,10 @@ private:
     std::mutex m_mutex;
     //完成初始化了
     bool isCompleteInit = false;
+
+    //异步seek
+    std::atomic<bool> m_isSeeking = false;
+    std::atomic<double> m_seekPos = 0;
 
 };
 
