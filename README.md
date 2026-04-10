@@ -62,15 +62,12 @@ QtPlayer/
 ├── main.cpp
 ├── player.* # 主界面
 ├── player.ui
-
 ├── demuxthread.* # 解封装线程
 ├── decodethread.* # 解码基类
 ├── audiothread.* # 音频线程
 ├── videothread.* # 视频线程
-
 ├── audioplayer.* # 音频播放抽象 + Qt实现
 ├── videowidget.* # 视频渲染控件
-
 ├── myslider.* # 自定义进度条
 ```
 
