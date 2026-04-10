@@ -48,6 +48,7 @@ bool DemuxThread::openFile(const char* url,VideoWidget* widget)
         return false;
     }
     close();
+
     bool tmpRet = true;
     m_mutex.lock();
     //2.打开解封装打开输入流
@@ -92,6 +93,8 @@ bool DemuxThread::openFile(const char* url,VideoWidget* widget)
 
     // 打开视频解码器和处理线程
     AVCodecParameters *vpara = m_fmt_ctx->streams[m_videoStream]->codecpar;
+    m_width = vpara->width;
+    m_height = vpara->height;
     if(!m_videoThread->open(vpara,widget,vpara->width,vpara->height)){
         tmpRet = false;
         qDebug()<<"m_videoThread->open failed";
@@ -217,6 +220,11 @@ bool DemuxThread::getIsPause()
     return m_isPause;
 }
 
+long long DemuxThread::getVideoPts()
+{
+    return m_videoThread->pts.load();
+}
+
 void DemuxThread::run()
 {
     static int count = 1;
@@ -240,9 +248,9 @@ void DemuxThread::run()
             }
             // 执行seek（瞬间完成）
             avformat_flush(m_fmt_ctx);
-            long long seekMs = m_seekPos * totalMs;
+            int64_t seekMs = m_seekPos * totalMs;
             //统一格式 转为FFmpeg 内部基
-            int64_t ts = av_rescale_q(seekMs, AV_TIME_BASE_Q,
+            int64_t ts = av_rescale_q(seekMs,{1, 1000},
                                       m_fmt_ctx->streams[m_videoStream]->time_base);
 
             av_seek_frame(m_fmt_ctx, m_videoStream, ts, AVSEEK_FLAG_BACKWARD);
@@ -294,6 +302,8 @@ void DemuxThread::run()
         }
         if(tmp){
             pts.store(m_audioThread->pts);
+            // emit moveSlider(pts.load());
+            // pts.store(m_videoThread->synpts.load());
             m_videoThread->synpts.store(m_audioThread->pts);
         }
         AVPacket *pkt = readPkt();

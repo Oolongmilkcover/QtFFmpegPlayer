@@ -6,15 +6,15 @@
 */
 #ifndef DECODETHREAD_H
 #define DECODETHREAD_H
+
 #include <QThread>
 #include<queue>
 #include<mutex>
 class AVCodec;
 class AVCodecContext;
 class AVPacket;
-struct AVFrame;
-struct AVCodecParameters;
-
+class AVFrame;
+class AVCodecParameters;
 class DecodeThread : public QThread
 {
     Q_OBJECT
@@ -60,6 +60,7 @@ protected:
     const AVCodec *m_codec = nullptr;
     //解码器上下文
     AVCodecContext* m_codec_ctx =nullptr;
+
 };
 
 #endif // DECODETHREAD_H

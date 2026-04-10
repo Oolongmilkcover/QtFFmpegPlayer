@@ -24,7 +24,9 @@ Player::Player(QWidget *parent)
 
 
     dt.start();
-    startTimer(1);
+
+
+
     connect(ui->slider, &mySlider::sliderPressed, this, &Player::sliderPress);
     connect(ui->slider, &mySlider::sliderReleased, this, &Player::sliderRelease);
     connect(&dt,&DemuxThread::disableBtn,this,[=](){
@@ -93,6 +95,19 @@ void Player::on_openFile_clicked()
         QMessageBox::information(0, "error", "open file failed!");
         return;
     }
+    this->showNormal();
+    m_isInit = true;
+    // 重置滑块状态，避免之前操作的影响
+    isSliderPress = false;                 // 清除按下标志
+    ui->slider->setValue(0);               // 滑块归零
+    ui->slider->setMaximum(dt.totalMs);    // 设置新的最大值（毫秒
+    startTimer(16);
+    if(dt.m_width==1920&&dt.m_height==1080){
+        resize(1280, 720);
+    }else{
+        resize(dt.m_width/2, dt.m_height/2);
+    }
+    update();
     setPauseText(dt.getIsPause());
 }
 
@@ -122,6 +137,9 @@ void Player::sliderPress()
 
 void Player::sliderRelease()
 {
+    if(!m_isInit){
+        return;
+    }
     isSliderPress = false;
     double pos = 0.0;
     pos = (double)ui->slider->value() / (double)ui->slider->maximum();
@@ -134,8 +152,10 @@ void Player::timerEvent(QTimerEvent *e)
     long long total = dt.totalMs;
     if (total > 0)
     {
-        double pos = (double)dt.pts / (double)total;
-        int v = ui->slider->maximum() * pos;
-        ui->slider->setValue(v);
+        // double pos = (double)dt.pts / (double)total;
+        // int v = ui->slider->maximum() * pos;
+        // ui->slider->setValue(v);
+        ui->slider->setMaximum(total);
+        ui->slider->setValue(dt.getVideoPts());
     }
 }

@@ -42,7 +42,10 @@ public:
 
     //返回isPause
     bool getIsPause();
-    
+
+    //进度条用获取pts
+    long long getVideoPts();
+
     void run() override;
 
     //pts
@@ -51,12 +54,16 @@ public:
     //总时长ms
     long long totalMs = 0;
 
+    //宽高
+    int m_width = 0;
+    int m_height = 0;
+
 private slots:
     void setDone();
 signals:
     void disableBtn();
     void ableBtn();
-    
+    // void moveSlider(long long pts);
 private:
 
     //是否暂停
@@ -84,6 +91,8 @@ private:
     std::atomic<double> m_seekPos = 0;
 
     std::atomic<bool> m_eof = false;
+
+
 };
 
 #endif // DEMUXTHREAD_H

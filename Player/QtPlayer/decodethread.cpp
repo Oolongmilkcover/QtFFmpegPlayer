@@ -35,7 +35,7 @@ void DecodeThread::push(AVPacket *pkt)
                 return;
             }
         }
-        msleep(1);
+        // msleep(1);
     }
     av_packet_free(&pkt);
 
@@ -144,8 +144,8 @@ bool DecodeThread::codecInit(AVCodecParameters *para)
     m_codec_ctx = avcodec_alloc_context3(m_codec);
     //配置解码器上下文参数
     avcodec_parameters_to_context(m_codec_ctx,para);
-    //设个八线程解码
-    m_codec_ctx->thread_count = 8;
+    //设个八线程解码或是自动
+    m_codec_ctx->thread_count = 0;
     //打开解码器上下文
     int ret = avcodec_open2(m_codec_ctx, NULL, NULL);
     if (ret != 0) {

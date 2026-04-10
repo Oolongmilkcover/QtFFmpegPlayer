@@ -10,6 +10,8 @@
 
 #include "decodethread.h"
 
+
+
 #include <QObject>
 class VideoWidget;
 class VideoThread : public DecodeThread
@@ -27,7 +29,7 @@ public:
 
 
     //给seek做的函数，如果没到达指定pos就释放，到了就显示并释放
-    bool repaintPts(AVPacket *pkt, long long seekpts);
+    bool repaintPts(AVPacket *pkt, int64_t seekpts);
 
     //暂停
     void setPause(bool isPause);
@@ -44,6 +46,8 @@ private:
     bool m_isPause = false;
     std::mutex m_viMutex;
     VideoWidget* m_widget;
+    double m_fps = 60;  // 或从 AVStream 获取
+    double m_frame_duration_ms = 1000.0 / m_fps;      // 每帧应显示的时间（毫秒）
 };
 
 #endif // VIDEOTHREAD_H

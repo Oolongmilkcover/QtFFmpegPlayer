@@ -9,7 +9,13 @@ class mySlider : public QSlider
 public:
     explicit mySlider(QWidget *parent = nullptr);
     void mousePressEvent(QMouseEvent *e);
+    void mouseMoveEvent(QMouseEvent *e);
+    void mouseReleaseEvent(QMouseEvent *e);
+
 signals:
+
+private:
+    bool m_isDragging = false;
 };
 
 #endif // MYSLIDER_H

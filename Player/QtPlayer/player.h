@@ -40,5 +40,6 @@ private:
 
     bool isSliderPress = false;
     DemuxThread dt;
+    bool m_isInit = false;
 };
 #endif // PLAYER_H
