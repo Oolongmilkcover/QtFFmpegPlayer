@@ -123,14 +123,14 @@ set(FFMPEG_PATH "你的FFmpeg路径")
 ```
 
 ### 2. 构建项目
-
+####Debug
 ```Bash (Debug)
 mkdir build
 cd build
 cmake ..
 cmake --build .
 ```
-
+####Release
 ```Bash (Release)
 cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build
