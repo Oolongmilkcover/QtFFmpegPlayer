@@ -8,8 +8,9 @@
 #define DECODETHREAD_H
 
 #include <QThread>
-#include<queue>
 #include<mutex>
+#include "framequeue.h"
+#include"packetqueue.h"
 class AVCodec;
 class AVCodecContext;
 class AVPacket;
@@ -22,11 +23,7 @@ public:
     explicit DecodeThread(QObject *parent = nullptr);
     virtual ~DecodeThread();
     //将pkt加入队列
-    void push(AVPacket *pkt);
-    //取出一个pkt
-    AVPacket *pop();
-    //清理队列
-    void clear();
+    void push(AVPacket *pkt,int serial);
     //关闭
     void close();
     //这是退出
@@ -34,14 +31,20 @@ public:
     //设置队列最大容量默认一百
     void setMaxSize(int size = 100);
     //send pkt并释放
+    bool send(std::unique_ptr<Packet>& pkt);
     bool send(AVPacket* pkt);
     //recv
     AVFrame* recv();
-
+    //调用队列的clear
+    void clear();
     //找到解码器并创建配置解码器上下文
     bool codecInit(AVCodecParameters *para);
 
     void flushBuf();
+
+
+
+
 public:
     //当前的pts
     std::atomic<long long> pts = {0};
@@ -51,15 +54,19 @@ protected:
     //队列最大容量
     int m_maxSize = 100;
     //是否退出
-    bool m_isExit = false;
+    std::atomic<bool> m_isExit = false;
     //互斥锁
     std::mutex m_mutex;
-    //缓冲队列
-    std::queue<AVPacket*> m_pktQue;
+    //Packet缓冲队列
+    PacketQueue* m_pktQue;
+    //Frame环形队列
+    FrameQueue* m_frameQue;
     //编码器
     const AVCodec *m_codec = nullptr;
     //解码器上下文
     AVCodecContext* m_codec_ctx =nullptr;
+    //序列serial
+    std::atomic<int> m_serial = 0;
 
 };
 

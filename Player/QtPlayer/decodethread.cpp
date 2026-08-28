@@ -15,63 +15,29 @@ DecodeThread::DecodeThread(QObject *parent)
 DecodeThread::~DecodeThread()
 {
     setExit(true); // 析构时才设为 true
-    // quit();
     wait();
     close();
+    qDebug()<<"~DecodeThread";
 }
 
-void DecodeThread::push(AVPacket *pkt)
+void DecodeThread::push(AVPacket *pkt , int serial)
 {
     
     if(!pkt){
         return;
     }
-    while(!m_isExit){
-        {
-            std::lock_guard<std::mutex> lock(m_mutex);
-            if(m_pktQue.size()<m_maxSize){
-                m_pktQue.push(pkt);
-                // qDebug()<<m_pktQue.size();
-                return;
-            }
-        }
-        // msleep(1);
-    }
-    av_packet_free(&pkt);
-
-}
-
-AVPacket *DecodeThread::pop()
-{
-    std::lock_guard<std::mutex> lock(m_mutex);
-
-    if(!m_pktQue.empty()){
-        AVPacket* pkt = m_pktQue.front();
-        m_pktQue.pop();
-        // qDebug()<<"m_pktQue.pop";
-        return pkt;
-    }
-    return nullptr;
-}
-
-void DecodeThread::clear()
-{
-    std::lock_guard<std::mutex> lock(m_mutex);
-    while (!m_pktQue.empty()) {
-        AVPacket *pkt = m_pktQue.front();
-        m_pktQue.pop();
+    if (!m_pktQue) {
         av_packet_free(&pkt);
+        return;
     }
+    m_pktQue->push(pkt, serial);
 }
+
 
 void DecodeThread::close()
 {
-    // setExit(true);
-    // quit();
-    // wait();
 
     clear();
-
     std::lock_guard<std::mutex> lock(m_mutex);
     if (m_codec_ctx) {
         avcodec_free_context(&m_codec_ctx);
@@ -90,10 +56,32 @@ void DecodeThread::setMaxSize(int size)
     m_maxSize = size;
 }
 
-bool DecodeThread::send(AVPacket *pkt)
+bool DecodeThread::send(std::unique_ptr<Packet>& pkt)
 {
-    // qDebug()<<"bool DecodeThread::send";
     //容错处理
+    //这里传入的数据其实必然不是nullptr
+    if (!pkt || !pkt->m_pkt ||pkt->m_pkt->size <= 0 || !pkt->m_pkt->data){
+        return false;
+    }
+    int ret ;
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        if(!m_codec_ctx){
+            qDebug()<<"!m_codec_ctx";
+            return false;
+        }
+        ret= avcodec_send_packet(m_codec_ctx,pkt->m_pkt);
+    }
+
+    av_packet_free(&pkt->m_pkt);
+    pkt->m_pkt = nullptr;
+    return ret==0;
+}
+//供repaintPts调用的版本
+bool DecodeThread::send(AVPacket* pkt)
+{
+    //容错处理
+    //这里传入的数据其实必然不是nullptr
     if (!pkt || pkt->size <= 0 || !pkt->data){
         return false;
     }
@@ -108,6 +96,7 @@ bool DecodeThread::send(AVPacket *pkt)
     }
 
     av_packet_free(&pkt);
+    pkt = nullptr;
     return ret==0;
 }
 
@@ -125,8 +114,14 @@ AVFrame *DecodeThread::recv()
         av_frame_free(&frame);
         return nullptr;
     }
-    pts = frame->pts;
+
     return frame;
+}
+
+void DecodeThread::clear()
+{
+    if (m_pktQue)  m_pktQue->clear();
+    if (m_frameQue) m_frameQue->clear();
 }
 
 
@@ -152,6 +147,8 @@ bool DecodeThread::codecInit(AVCodecParameters *para)
         char err_buf[AV_ERROR_MAX_STRING_SIZE];
         av_strerror(ret, err_buf, sizeof(err_buf));
         qDebug()<< "avcodec_open2 failed!:" << err_buf;
+        avcodec_free_context(&m_codec_ctx);
+        m_codec_ctx = nullptr;
         return false;
     }
     return true;
@@ -159,5 +156,10 @@ bool DecodeThread::codecInit(AVCodecParameters *para)
 
 void DecodeThread::flushBuf()
 {
-    avcodec_flush_buffers(m_codec_ctx);
+    std::lock_guard<std::mutex> lock(m_mutex);
+    if (m_codec_ctx)
+        avcodec_flush_buffers(m_codec_ctx);
 }
+
+
+

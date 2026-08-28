@@ -40,7 +40,7 @@ public:
         //音频播放核心对象
         m_sink = new QAudioSink(device, fmt, this);
         m_sink->setVolume(m_savedVolume);
-
+        //m_sink->setBufferSize(131072*10);
         // 启动音频
         m_io = m_sink->start();
         if (!m_io) {
@@ -50,6 +50,8 @@ public:
             return false;
         }
         m_isPaused = false;
+
+
         return true;
     }
     
@@ -75,43 +77,42 @@ public:
 
     long long getNoPlayMs(){
         std::lock_guard<std::mutex> lock(m_mutex);
-        if (!m_sink) return 0;
 
-        long long pts = 0;
-        // 还未播放的字节数
-        double size = m_sink->bufferSize() - m_sink->bytesFree();
-        // 一秒音频字节大小
-        double secSize = sampleRate * (sampleSize / 8) * channels;
-        if (secSize > 0) {
-            pts = static_cast<long long>((size / secSize) * 1000);
-        }
-        return pts;
+        if (!m_sink)
+            return 0;
+
+        const qint64 bytes =
+            m_sink->bufferSize() -
+            m_sink->bytesFree();
+
+        const qint64 bytesPerSecond =
+            static_cast<qint64>(sampleRate) *
+            (sampleSize / 8) *
+            channels;
+
+        if (bytesPerSecond <= 0)
+            return 0;
+
+        return bytes * 1000 / bytesPerSecond;
     }
     
     void setPause(bool isPause){
         std::lock_guard<std::mutex> lock(m_mutex);
-
-        if (!m_sink)
-            return;
-
         // 如果当前状态已经一致，直接返回
-        if (m_isPaused == isPause)
+        if (!m_sink||m_isPaused == isPause)
             return;
-
         if (isPause) {
             // 暂停
             m_sink->suspend();
-            if(m_io)m_io->reset();
         } else {
             //恢复
             m_sink->resume();
+            m_sink->setVolume(m_savedVolume);
         }
-
         m_isPaused = isPause;
-
     }
     
-    bool write(const unsigned char *data, int datasize){
+    int write(const unsigned char *data, int datasize){
         if(!data || datasize<=0){
             return false;
         }
@@ -121,8 +122,17 @@ public:
         if(!m_sink||!m_io){
             return false;
         }
-        int size = m_io->write((char*)data,datasize);
-        return datasize==size;
+
+
+        qint64 written = m_io->write(
+            reinterpret_cast<const char*>(data),
+            datasize
+            );
+
+        if (written < 0)
+            return 0;
+
+        return static_cast<int>(written);
     }
     
     int getFree(){
@@ -137,6 +147,9 @@ public:
         if (!m_isPaused && m_sink) {  // 增加空判断
             m_sink->setVolume(vol);
         }
+    }
+    double getVolume(){
+        return double(m_savedVolume);
     }
 };
 

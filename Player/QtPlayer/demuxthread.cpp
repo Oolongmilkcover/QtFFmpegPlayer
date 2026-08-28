@@ -1,7 +1,7 @@
 #include "demuxthread.h"
 #include "audiothread.h"
-
-#include "videothread.h"
+#include "videodecodethread.h"
+#include "videorenderthread.h"
 #include "videowidget.h"
 #include <QDebug>
 
@@ -18,9 +18,9 @@ DemuxThread::DemuxThread(QObject *parent)
     //网络延时时间
     av_dict_set(&m_option, "max_delay", "500", 0);
     //1.创建视频音频线程
-    m_videoThread = new VideoThread();
+    m_videoDecodeThread = new VideoDecodeThread();
     m_audioThread = new AudioThread();
-    connect(m_videoThread,&VideoThread::setDone,this,&DemuxThread::setDone);
+
 }
 
 DemuxThread::~DemuxThread()
@@ -29,9 +29,9 @@ DemuxThread::~DemuxThread()
     wait();
 
     // 释放音视频线程
-    delete m_videoThread;
+    delete m_videoDecodeThread;
     delete m_audioThread;
-    m_videoThread = nullptr;
+    m_videoDecodeThread = nullptr;
     m_audioThread = nullptr;
 
     // 释放全局配置字典
@@ -40,6 +40,9 @@ DemuxThread::~DemuxThread()
         av_dict_free(&m_option);
         m_option = nullptr;
     }
+
+    //20260722
+    avformat_close_input(&m_fmt_ctx);
 }
 
 bool DemuxThread::openFile(const char* url,VideoWidget* widget)
@@ -48,73 +51,84 @@ bool DemuxThread::openFile(const char* url,VideoWidget* widget)
         return false;
     }
     close();
+    m_isExit.store(false);
+    m_serial.store(0); //每次加载时serial清零
 
     bool tmpRet = true;
-    m_mutex.lock();
-    //2.打开解封装打开输入流
-    int ret = avformat_open_input(&m_fmt_ctx, url, NULL, &m_option);
-    if (ret < 0) {
-        char err_buf[AV_ERROR_MAX_STRING_SIZE];
-        av_strerror(ret, err_buf, sizeof(err_buf));
-        qDebug()<< "open" << url << "failed!:" << err_buf;
-        // 释放已创建的线程
-        closeAVThread();
-        return false;
-    }
-    //3.读取流信息
-    ret = avformat_find_stream_info(m_fmt_ctx, NULL);
-    if (ret < 0) {
-        qDebug()<< "读取流信息失败";
-        avformat_close_input(&m_fmt_ctx);
-        // 释放已创建的线程
-        closeAVThread();
-        return false;
-    }
-    //获取时长
-    double sec = (double)m_fmt_ctx->duration / AV_TIME_BASE; //秒
-    totalMs = sec*1000; // 换算成毫秒
-    qDebug()<<"totalMs:" << totalMs ;
-    //打印视频流详细信息
-    av_dump_format(m_fmt_ctx, 0, url, 0);
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        //2.打开解封装打开输入流
+        int ret = avformat_open_input(&m_fmt_ctx, url, NULL, &m_option);
+        if (ret < 0) {
+            char err_buf[AV_ERROR_MAX_STRING_SIZE];
+            av_strerror(ret, err_buf, sizeof(err_buf));
+            qDebug()<< "open" << url << "failed!:" << err_buf;
+            // 释放已创建的线程
+            closeAVThread();
+            tmpRet =  false;
+        }else{
+            //配合rtsp流不卡 退出流程设置的回调函数
+            m_fmt_ctx->interrupt_callback.callback = interruptCallback;
+            m_fmt_ctx->interrupt_callback.opaque   = this;
 
-    //获取音视频流信息
-    m_videoStream = av_find_best_stream(m_fmt_ctx,AVMEDIA_TYPE_VIDEO,-1,-1,NULL,0);
-    if (m_videoStream < 0) {
-        // 释放已创建的线程
-        closeAVThread();
-        return false;
-    }
-    m_audioStream = av_find_best_stream(m_fmt_ctx,AVMEDIA_TYPE_AUDIO,-1,-1,NULL,0);
-    if (m_audioStream < 0) {
-        // 释放已创建的线程
-        closeAVThread();
-        return false;
-    }
+            ret = avformat_find_stream_info(m_fmt_ctx, NULL);
+            if (ret < 0) {
+                qDebug()<< "读取流信息失败";
+                avformat_close_input(&m_fmt_ctx);
+                // 释放已创建的线程
+                closeAVThread();
+                tmpRet =  false;
+            }
+        }
+        //获取时长
+        double sec = (double)m_fmt_ctx->duration / AV_TIME_BASE; //秒
+        totalMs = sec*1000; // 换算成毫秒
+        qDebug()<<"totalMs:" << totalMs ;
+        //打印视频流详细信息
+        av_dump_format(m_fmt_ctx, 0, url, 0);
 
+        if(tmpRet){
+            //获取音视频流信息
+            m_videoStream = av_find_best_stream(m_fmt_ctx,AVMEDIA_TYPE_VIDEO,-1,-1,NULL,0);
+            m_audioStream = av_find_best_stream(m_fmt_ctx,AVMEDIA_TYPE_AUDIO,-1,-1,NULL,0);
+            if (m_videoStream < 0 || m_audioStream < 0){
+                // 释放已创建的线程
+                closeAVThread();
+                tmpRet = false;
+            }
+        }
+    }
+    if (!tmpRet) {
+        if (m_fmt_ctx) {
+            avformat_close_input(&m_fmt_ctx);
+            m_fmt_ctx = nullptr;
+        }
+        return false;
+    }
     // 打开视频解码器和处理线程
     AVCodecParameters *vpara = m_fmt_ctx->streams[m_videoStream]->codecpar;
     m_width = vpara->width;
     m_height = vpara->height;
-    if(!m_videoThread->open(vpara,widget,vpara->width,vpara->height)){
+    if(!m_videoDecodeThread->open(widget,vpara->width,vpara->height,m_fmt_ctx->streams[m_videoStream])){
         tmpRet = false;
-        qDebug()<<"m_videoThread->open failed";
+        qDebug()<<"m_videoDecodeThread->open failed";
     }
     // // 打开音频解码器和处理线程
-    AVCodecParameters *apara = m_fmt_ctx->streams[m_audioStream]->codecpar;
-    if(!m_audioThread->open(apara,apara->sample_rate,apara->ch_layout.nb_channels)){
+    if(!m_audioThread->open(m_fmt_ctx->streams[m_audioStream])){
         tmpRet = false;
         qDebug()<<"m_audioThread->open failed";
     }
     qDebug()<<"DemuxThread::Open :"<<tmpRet;
     if(!tmpRet){
-        m_mutex.unlock();
         closeAVThread();
     }else{
         isCompleteInit = true;
-        m_mutex.unlock();
         setPause(false);
         qDebug()<<"openFile end";
     }
+    m_audioTimebase = m_fmt_ctx->streams[m_audioStream]->time_base;
+    m_videoTimebase = m_fmt_ctx->streams[m_videoStream]->time_base;
+
     return tmpRet;
 }
 
@@ -122,46 +136,106 @@ void DemuxThread::start()
 {
     std::lock_guard<std::mutex> lock(m_mutex);
     QThread::start();
-    if (m_videoThread) m_videoThread->start();
-    if (m_audioThread) m_audioThread->start();
+    if (m_videoDecodeThread) m_videoDecodeThread->start();
+    if (m_audioThread) m_audioThread->start();//启动两个子线程
 
 }
 
 void DemuxThread::setPause(bool isPause)
 {
+    bool flag = false;
+    if(m_isFrameStep){
+        flag = true;
+    }
+    endFrameStep();
+    m_isFrameStep.store(false);
+    m_lastIsPause.store(m_isPause);
     m_isPause.store(isPause);
     if (m_audioThread) m_audioThread->setPause(isPause);
-    if (m_videoThread) m_videoThread->setPause(isPause);
+    if (m_videoDecodeThread) m_videoDecodeThread->setPause(isPause);
+    if(flag){
+        double pos = (double)getVideoPts() / totalMs;
+        seek(pos);
+    }
+}
+
+void DemuxThread::startFrameStep()
+{
+    if (!m_videoDecodeThread) return;
+    //暂停音频与视频渲染线程  解码线程不停止
+    // 音频暂停（声音停）
+    //if (m_audioThread) m_audioThread->setPause(true);
+    m_saveVolume = m_audioThread->getVolume();
+    double re = 0.0;
+    m_audioThread->setVolume(re);
+    // 视频只暂停渲染，解码继续
+    m_videoDecodeThread->setRenderPause(true);
+    m_isFrameStep.store(true);
+
+}
+
+void DemuxThread::endFrameStep()
+{
+    if(!m_isFrameStep){
+        return ;
+    }
+    m_isFrameStep.store(false);
+    //将视频pts传给音频
+    if (m_audioThread){
+        long long pts = m_videoDecodeThread->getVideoRenderPts();
+        m_audioThread->sendPts(pts);
+        //解除暂停
+        m_audioThread->setPause(false);
+    }
+    // 解除暂停
+    m_videoDecodeThread->setRenderPause(false);
+    m_audioThread->setVolume(m_saveVolume);
+}
+
+void DemuxThread::stepNextFrame()
+{
+    if(!m_isFrameStep.load()){
+        startFrameStep();
+    }
+    m_videoDecodeThread->setStepFrameMode(1);
+}
+
+void DemuxThread::stepPrevFrame()
+{
+    if(!m_isFrameStep.load()){
+        startFrameStep();
+    }
+    m_videoDecodeThread->setStepFrameMode(2);
 }
 
 bool DemuxThread::seek(double pos)
 {
-    if(pos == 0.0 && playDone ){
+    if(pos < 0|| pos > 1|| m_isFrameStep ) {
         return false;
     }
+    m_lastIsPause.store(m_isPause);
     setPause(false);
     QThread::usleep(500);
     emit disableBtn();
     m_seekPos = pos;
     m_isSeeking = true;
+    m_serial.fetch_add(1); //serial++
     return true;
 }
 
 
 void DemuxThread::close()
 {
-
+    m_isExit = true;
     setPause(true);  // 先暂停
+    closeAVThread();// 关闭音视频线程
     clear();         // 清空队列
-
-    closeAVThread(); // 关闭音视频线程
-
+    wait();         // 等 demux 线程退出
     std::lock_guard<std::mutex> lock(m_mutex);
     if (m_fmt_ctx) {
         avformat_close_input(&m_fmt_ctx);
         m_fmt_ctx = nullptr;
     }
-
     m_videoStream = -1;
     m_audioStream = -1;
     totalMs = 0;
@@ -171,19 +245,19 @@ void DemuxThread::close()
 
 void DemuxThread::clear()
 {
-    if (m_videoThread) m_videoThread->clear();
+    if (m_videoDecodeThread) m_videoDecodeThread->clear();
     if (m_audioThread) m_audioThread->clear();
 }
 
 void DemuxThread::closeAVThread()
 {
-    if (m_videoThread) m_videoThread->close();
+    if (m_videoDecodeThread) m_videoDecodeThread->close();
     if (m_audioThread) m_audioThread->close();
 }
 
 AVPacket *DemuxThread::readPkt()
 {
-    // qDebug()<<"readPkt";
+    //qDebug()<<"readPkt";
     m_mutex.lock();
     bool valid = m_fmt_ctx != nullptr;
     m_mutex.unlock();
@@ -207,11 +281,6 @@ AVPacket *DemuxThread::readPkt()
         return nullptr;
     }
 
-
-    AVRational tb = m_fmt_ctx->streams[pkt->stream_index]->time_base;
-    //pts转换为毫秒
-    pkt->pts = pkt->pts*(1000 * (av_q2d(tb)));
-    pkt->dts = pkt->dts*(1000 * (av_q2d(tb)));
     return pkt;
 }
 
@@ -222,48 +291,41 @@ bool DemuxThread::getIsPause()
 
 long long DemuxThread::getVideoPts()
 {
-    return m_videoThread->pts.load();
+    return m_videoDecodeThread->getVideoRenderPts();
 }
 
 void DemuxThread::run()
 {
-    static int count = 1;
     while(!m_isExit){
         // ===== 1. 先处理 seek  =====
         if (m_isSeeking)
         {
             m_isSeeking = false;
-
-            // 1. 先保存暂停状态
-            bool wasPause = m_isPause;
+            // 1先保存暂停状态
+            bool wasPause = m_lastIsPause;
             setPause(true);
 
-            // 2. 清空队列（快速，加锁没问题）
-            clear();
-            m_mutex.lock();
-            if (!isCompleteInit || !m_fmt_ctx || m_videoStream < 0) {
-                m_mutex.unlock();
-                setPause(wasPause);
-                return;
-            }
-            // 执行seek（瞬间完成）
-            avformat_flush(m_fmt_ctx);
+            //清空两个 packet 队列和 frame 队列
+            m_videoDecodeThread->clear();
+            m_audioThread->clear();
+
+            //2.seek
             int64_t seekMs = m_seekPos * totalMs;
-            //统一格式 转为FFmpeg 内部基
-            int64_t ts = av_rescale_q(seekMs,{1, 1000},
-                                      m_fmt_ctx->streams[m_videoStream]->time_base);
-
-            av_seek_frame(m_fmt_ctx, m_videoStream, ts, AVSEEK_FLAG_BACKWARD);
-            if (m_videoThread)
             {
-                m_videoThread->flushBuf();
+                std::lock_guard<std::mutex> lock(m_mutex);
+                if (!isCompleteInit || !m_fmt_ctx || m_videoStream < 0) {
+                    setPause(wasPause);
+                    emit ableBtn();
+                    continue;
+                }
+                avformat_flush(m_fmt_ctx);
+                int64_t ts = av_rescale_q(seekMs, {1, 1000}, m_videoTimebase);
+                av_seek_frame(m_fmt_ctx, m_videoStream, ts, AVSEEK_FLAG_BACKWARD);
+                // 解码器 flush
+                m_videoDecodeThread->flushBuf();
+                m_audioThread->flushBuf();
             }
-
-            if (m_audioThread)
-            {
-                m_videoThread->flushBuf();
-            }
-            m_mutex.unlock();
+            int serial = m_serial.load();
             while (!m_isExit)
             {
                 AVPacket *pkt = readPkt(); // 内部自己加锁、快速释放
@@ -271,17 +333,19 @@ void DemuxThread::run()
 
                 if (pkt->stream_index == m_videoStream) {
                     // repaintPts 内部只在解码瞬间加锁
-                    bool found = m_videoThread->repaintPts(pkt, seekMs);
+                    bool found = m_videoDecodeThread->repaintPts(pkt, seekMs,serial);
                     if (found) break;
                 } else {
                     av_packet_free(&pkt);
                 }
             }
+            // 3. 更新 serial
+            m_audioThread->setSerial(serial);
 
-            // 恢复暂停
+            // 6. 恢复暂停状态
             setPause(wasPause);
             emit ableBtn();
-            continue;  //非常重要：本轮结束
+            continue;
         }
 
         // 暂停或未初始化 → 等待
@@ -295,64 +359,69 @@ void DemuxThread::run()
         bool tmp = false;
         {
             std::lock_guard<std::mutex> lock(m_mutex);
-            if (m_videoThread && m_audioThread)
+            if (m_videoDecodeThread && m_audioThread)
             {
                 tmp = true;
             }
         }
         if(tmp){
-            pts.store(m_audioThread->pts);
-            // emit moveSlider(pts.load());
-            // pts.store(m_videoThread->synpts.load());
-            m_videoThread->synpts.store(m_audioThread->pts);
+            pts.store(m_audioThread->getPts());
+            m_videoDecodeThread->setSynpts(pts);
         }
         AVPacket *pkt = readPkt();
         if (!pkt)
         {
-            // if(pts>0&&totalMs>0&&pts>=totalMs*0.8){
-            if(totalMs>0&&m_eof){
-                m_videoThread->lastSome.store(true);
-                playDone.store(true);
-                qDebug()<<"!pkt";
-                int timeCount = 0;
-                while(!seek(0.0)){
-                    msleep(10);
-                    timeCount++;
-                    if(timeCount>=200){
-                        playDone.store(false);
+            if(m_eof){
+                m_videoDecodeThread->setLastSome(true);
+                if(m_videoDecodeThread->getPlayDone()){
+                    m_videoDecodeThread->setLastSome(false);
+                    m_eof.store(false);
+                    // 直接 seek 到开头 或下一集
+                    if(m_hasPlayList){
+                        emit playNext();
+                    }else{
+                        seek(0.0);
                     }
-                    // qDebug()<<"seek0.0 fail" ;
                 }
-                m_eof.store(false);
-                continue;
             }
             msleep(5);
             continue;
-        }else{
-            m_videoThread->lastSome.store(false);
         }
         // 判断数据是音频
-        if(pkt->stream_index == m_videoStream && m_videoThread){
+        if(pkt->stream_index == m_videoStream && m_videoDecodeThread){
             //视频
-            // qDebug()<<"m_videoThread->push(pkt):"<<count++;
-            m_videoThread->push(pkt);
-
+            m_videoDecodeThread->push(pkt,m_serial.load());
         }else if(pkt->stream_index == m_audioStream && m_audioThread){
             //音频
-            // qDebug()<<"m_audioThread->push(pkt)";
-            m_audioThread->push(pkt);
-
+            m_audioThread->push(pkt,m_serial.load());
         }else{
             av_packet_free(&pkt);
         }
-        // msleep(1);
+        msleep(2);
     }
 }
 
 void DemuxThread::setDone()
 {
-
-    // qDebug()<<"get emit";
-    playDone.store(false);
-
+    playDone.store(true);
 }
+
+bool DemuxThread::getIsExit() const
+{
+    return m_isExit.load();
+}
+
+void DemuxThread::setVolume(double& pos)
+{
+    if(m_audioThread){
+        m_audioThread->setVolume(pos);
+    }
+}
+
+void DemuxThread::setHasPlayList(bool has)
+{
+    m_hasPlayList.store(has);
+}
+
+
+

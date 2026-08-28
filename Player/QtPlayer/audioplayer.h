@@ -16,10 +16,11 @@ public:
     //返回缓冲中还没有播放的时间（毫秒）
     virtual long long getNoPlayMs() = 0;
     //播放音频
-    virtual bool write(const unsigned char *data, int datasize) = 0;
+    virtual int write(const unsigned char *data, int datasize) = 0;
     virtual int getFree() = 0;
     virtual void setPause(bool isPause) = 0;
     virtual void setVolume(qreal vol) = 0;
+    virtual double  getVolume() = 0;
     static AudioPlayer *getPlayer();
     AudioPlayer();
     virtual ~AudioPlayer();

@@ -6,13 +6,7 @@ mySlider::mySlider(QWidget *parent)
     :QSlider(parent)
 {}
 
-// void mySlider::mousePressEvent(QMouseEvent *e)
-// {
-//     double pos = (double)e->pos().x() / (double)width();
-//     setValue(pos * this->maximum());
-//     // 发射按下信号
-//     emit sliderReleased();
-// }
+
 
 void mySlider::mousePressEvent(QMouseEvent *e)
 {

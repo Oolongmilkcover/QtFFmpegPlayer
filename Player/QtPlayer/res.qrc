@@ -1,0 +1,27 @@
+<RCC>
+    <qresource prefix="/">
+        <file>Basic.shader</file>
+        <file>workBtnPNG/closeBtn.png</file>
+        <file>workBtnPNG/ffBtn.png</file>
+        <file>workBtnPNG/fullBtn.png</file>
+        <file>workBtnPNG/maxBtn.png</file>
+        <file>workBtnPNG/miniBtn.png</file>
+        <file>workBtnPNG/nextBtn.png</file>
+        <file>workBtnPNG/openFileBtn.png</file>
+        <file>workBtnPNG/pauseBtn.png</file>
+        <file>workBtnPNG/prevBtn.png</file>
+        <file>workBtnPNG/rewindBtn.png</file>
+        <file>workBtnPNG/settingBtn.png</file>
+        <file>workBtnPNG/showlistBtn.png</file>
+        <file>workBtnPNG/slowdownBtn.png</file>
+        <file>workBtnPNG/speedupBtn.png</file>
+        <file>workBtnPNG/stopBtn.png</file>
+        <file>workBtnPNG/volumeBtn.png</file>
+        <file>workBtnPNG/startBtn.png</file>
+        <file>workBtnPNG/volumeNoneBtn.png</file>
+        <file>workBtnPNG/restoreBtn.png</file>
+        <file>workBtnPNG/nextFrameBtn.png</file>
+        <file>workBtnPNG/prevFrameBtn.png</file>
+    </qresource>
+    <qresource prefix="/new/prefix1"/>
+</RCC>

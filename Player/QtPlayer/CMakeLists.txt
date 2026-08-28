@@ -15,26 +15,38 @@ find_package(Qt6 REQUIRED COMPONENTS
     Gui
     Widgets
     Multimedia
+    OpenGL
+    OpenGLWidgets
 )
 
 # ========================== 所有源文件 ==========================
 set(PROJECT_SOURCES
     main.cpp
-    player.cpp
-    player.h
-    player.ui
-    demuxthread.h demuxthread.cpp
+    player.h       player.cpp        player.ui
+    demuxthread.h  demuxthread.cpp
     decodethread.h decodethread.cpp
-    videothread.h videothread.cpp
-    audiothread.h audiothread.cpp
-    videowidget.h videowidget.cpp
-    audioplayer.h audioplayer.cpp
-    myslider.h myslider.cpp
+    videodecodethread.h  videodecodethread.cpp
+    audiothread.h  audiothread.cpp
+    videowidget.h  videowidget.cpp
+    audioplayer.h  audioplayer.cpp
+    myslider.h     myslider.cpp
+    ctrlbar.h      ctrlbar.cpp        ctrlbar.ui
+    topmenu.h      topmenu.cpp        topmenu.ui
+    playlist.h     playlist.cpp       playlist.ui
 )
 
 qt_add_executable(QtPlayer
     MANUAL_FINALIZATION
     ${PROJECT_SOURCES}
+    res.qrc
+    ctrlbar.h ctrlbar.cpp ctrlbar.ui
+    topmenu.h topmenu.cpp topmenu.ui
+    playlist.h playlist.cpp playlist.ui
+
+    packetqueue.h packetqueue.cpp
+    framequeue.h framequeue.cpp
+    videorenderthread.h videorenderthread.cpp
+
 )
 
 # ========================== FFmpeg 配置 ==========================
@@ -54,7 +66,8 @@ target_link_libraries(QtPlayer PRIVATE
     Qt6::Gui
     Qt6::Widgets
     Qt6::Multimedia
-
+    Qt6::OpenGL
+    Qt6::OpenGLWidgets
 
     ${AVCODEC_LIB}
     ${AVFORMAT_LIB}

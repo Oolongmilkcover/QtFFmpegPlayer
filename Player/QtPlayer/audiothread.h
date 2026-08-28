@@ -1,51 +1,100 @@
-/*
-解码音频
-重采样
-播放声音
-提供全局时钟 pts（音画同步基准）
-*/
 #ifndef AUDIOTHREAD_H
 #define AUDIOTHREAD_H
+
 #include "audioplayer.h"
 #include "decodethread.h"
 
+#include <thread>
+#include <atomic>
+#include <mutex>
+
 class SwrContext;
+
 class AudioThread : public DecodeThread
 {
     Q_OBJECT
+
 public:
-    explicit AudioThread();
-    virtual ~AudioThread();
+    explicit AudioThread(int frameQueSizeize = 100 , bool keep_last = false);
+    ~AudioThread();
 
-    //打开，不管成功与否都清理
-    bool open(AVCodecParameters *para, int sampleRate, int channels);
+    // 初始化音频
+    bool open(AVStream *audioStream);
 
-    //停止线程，清理资源
+    // 关闭
     void close();
-    void Clear();
 
-    //设置暂停
+    // 清空
+    void clear();
+
+    // 暂停
     void setPause(bool isPause);
 
-    //子线程
+    // 启动音频线程
+    void startAudio();
+
+    void sendPts(int64_t ptsMs);
+
+    // 获取当前音频时钟
+    long long getPts();
+
     void run();
 
+    void setSerial(int serial);
 
+    void setVolume(double& pos);
+
+    double getVolume();
 private:
-    //重采样初始化
+
+    // 解码线程
+    void decodeRun();
+
+    // 播放线程
+    void playRun();
+
+    // 重采样初始化
     bool resampleInit();
-    //返回重采样后大小,不管成功与否都释放indata空间
-    int resample(AVFrame *indata, unsigned char *data);
 
-signals:
 
 private:
-    std::mutex m_auMutex;
+
+    // 音频播放器
     AudioPlayer *m_auPlayer = nullptr;
-    //重采样上下文
-    SwrContext* m_swr_ctx = nullptr;
-    //是否暂停
+
+    // 重采样上下文
+    SwrContext *m_swr_ctx = nullptr;
+
+    // 重采样锁
+    std::mutex m_auMutex;
+
+    // 暂停
     std::atomic<bool> m_isPause = false;
+
+
+
+    // 解码线程
+    std::thread m_decodeThread;
+
+    // 播放线程
+    std::thread m_playThread;
+
+    // 是否运行
+    std::atomic<bool> m_running = false;
+
+    // 当前音频时钟
+    std::atomic<long long> m_audioPts = 0;
+
+    // 输出采样率
+    int m_outSampleRate = 48000;
+
+    // 输出声道数
+    int m_outChannels = 2;
+
+    // 输出格式
+    AVSampleFormat m_outSampleFmt = AV_SAMPLE_FMT_S16;
+
+    AVStream *m_audioStream = nullptr;
 };
 
-#endif // AUDIOTHREAD_H
+#endif

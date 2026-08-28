@@ -3,14 +3,16 @@
 /*
 打开文件
 读 AVPacket
-分给 VideoThread、AudioThread
+分给 VideoDecodeThread、AudioThread
 获取：宽、高、帧率、总时长
 Seek 功能 
 */
+
+#include "libavutil/rational.h"
 #include <QThread>
 class AVFormatContext;
 class AVDictionary;
-class VideoThread;
+class VideoDecodeThread;
 class AudioThread;
 class VideoWidget;
 class AVPacket;
@@ -28,6 +30,16 @@ public:
     
     //暂停
     void setPause(bool isPause);
+
+    //开始逐帧
+    void startFrameStep();
+    //结束逐帧
+    void endFrameStep();
+    //逐下帧
+    void stepNextFrame();
+    //回放上一帧
+    void stepPrevFrame();
+
 
     //跳转
     bool seek(double pos);
@@ -58,16 +70,41 @@ public:
     int m_width = 0;
     int m_height = 0;
 
+    double m_saveVolume = 0;
+
+    bool getIsExit() const;
+
+    /*
+    解决网络流会让退出卡死
+    播放器支持 rtsp 流，readPkt() 里的 av_read_frame 对网络流可能阻塞很久，dt.close() 里的 wait() 会一直等 demux 线程 → 窗口关不掉。
+    解决：给 FFmpeg 加中断回调（这是播放器支持"随时退出"的标准做法）
+    */
+    static int interruptCallback(void *opaque)
+    {
+        DemuxThread *d = static_cast<DemuxThread*>(opaque);
+        return d->getIsExit();   // 退出标志
+    }
+
+    void setVolume(double& pos);
+
+    void setHasPlayList(bool has);
+
 private slots:
     void setDone();
+
 signals:
     void disableBtn();
     void ableBtn();
     // void moveSlider(long long pts);
+    void playNext();
 private:
+    AVRational m_audioTimebase{};
+    AVRational m_videoTimebase{};
 
     //是否暂停
     std::atomic<bool> m_isPause = false;
+    //上次暂停状态
+    std::atomic<bool> m_lastIsPause = false;
     //是否退出
     std::atomic<bool>  m_isExit = false;
     //解封装上下文
@@ -75,8 +112,8 @@ private:
     //配置
     AVDictionary* m_option = nullptr;
     //音视频线程
-    VideoThread *m_videoThread = 0;
-    AudioThread *m_audioThread = 0;
+    VideoDecodeThread *m_videoDecodeThread = nullptr;
+    AudioThread *m_audioThread = nullptr;
 
     //音视频流
     int m_videoStream = -1;
@@ -92,6 +129,14 @@ private:
 
     std::atomic<bool> m_eof = false;
 
+    //seek的serial
+    std::atomic<int> m_serial = 0;
+
+    //主程序是否有播放列表
+    std::atomic<bool> m_hasPlayList = false;
+
+    //是否在逐帧
+    std::atomic<bool> m_isFrameStep = false;
 
 };
 
