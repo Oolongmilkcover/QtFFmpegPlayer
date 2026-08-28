@@ -1,8 +1,0 @@
-D:/QtProject/QtFFmpegPlayer/Player/QtPlayer/build/CMakeFiles/QtPlayer.dir
-D:/QtProject/QtFFmpegPlayer/Player/QtPlayer/build/CMakeFiles/edit_cache.dir
-D:/QtProject/QtFFmpegPlayer/Player/QtPlayer/build/CMakeFiles/rebuild_cache.dir
-D:/QtProject/QtFFmpegPlayer/Player/QtPlayer/build/CMakeFiles/list_install_components.dir
-D:/QtProject/QtFFmpegPlayer/Player/QtPlayer/build/CMakeFiles/install.dir
-D:/QtProject/QtFFmpegPlayer/Player/QtPlayer/build/CMakeFiles/install/local.dir
-D:/QtProject/QtFFmpegPlayer/Player/QtPlayer/build/CMakeFiles/QtPlayer_autogen_timestamp_deps.dir
-D:/QtProject/QtFFmpegPlayer/Player/QtPlayer/build/CMakeFiles/QtPlayer_autogen.dir
