@@ -87,6 +87,14 @@ Player::Player(QWidget *parent)
     connect(ui->ctrlbar, &CtrlBar::nextFrame, this, &Player::stepFrame);
     //上一帧
     connect(ui->ctrlbar, &CtrlBar::prevFrame, this, &Player::stepFrame);
+    //倍速
+    connect(ui->ctrlbar, &CtrlBar::speedChanged, this, [this](double speed){
+        dt.setSpeed(speed);
+    });
+    //滤镜切换
+    connect(ui->ctrlbar, &CtrlBar::filterChanged, this, [this](int type){
+        ui->video->setFilterType(type);
+    });
 
 
     //---------------------------------------------------------------------------

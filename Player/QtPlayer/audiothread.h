@@ -9,7 +9,8 @@
 #include <mutex>
 
 class SwrContext;
-
+struct AVFilterGraph;
+struct AVFilterContext;
 class AudioThread : public DecodeThread
 {
     Q_OBJECT
@@ -45,6 +46,11 @@ public:
     void setVolume(double& pos);
 
     double getVolume();
+
+    // 倍速：只设置目标速度，实际重建在解码线程做（无锁）
+    void setSpeed(double speed);          // 外部（GUI）调用，仅写原子变量
+    double getSpeed() const { return m_desiredSpeed.load(); }
+
 private:
 
     // 解码线程
@@ -56,6 +62,12 @@ private:
     // 重采样初始化
     bool resampleInit();
 
+
+    //倍速滤镜
+    // 创建 atempo 滤镜图
+    bool initAtempoFilter(double speed);
+    // 释放滤镜图
+    void freeAtempoFilter();
 
 private:
 
@@ -70,8 +82,6 @@ private:
 
     // 暂停
     std::atomic<bool> m_isPause = false;
-
-
 
     // 解码线程
     std::thread m_decodeThread;
@@ -95,6 +105,21 @@ private:
     AVSampleFormat m_outSampleFmt = AV_SAMPLE_FMT_S16;
 
     AVStream *m_audioStream = nullptr;
+
+    // 倍速成员
+    // 目标速度
+    std::atomic<double> m_desiredSpeed{1.0};
+    // 滤镜当前速度（解码线程读写）
+    double m_currentSpeed = 1.0;
+    // 滤镜图
+    AVFilterGraph   *m_filterGraph   = nullptr;
+    // 源滤镜（喂数据）
+    AVFilterContext  *m_buffersrcCtx  = nullptr;
+    // atempo 滤镜
+    AVFilterContext  *m_tempoCtx      = nullptr;
+    // 汇滤镜（取数据）
+    AVFilterContext  *m_buffersinkCtx = nullptr;
+
 };
 
 #endif

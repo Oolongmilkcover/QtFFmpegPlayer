@@ -423,5 +423,11 @@ void DemuxThread::setHasPlayList(bool has)
     m_hasPlayList.store(has);
 }
 
+void DemuxThread::setSpeed(double speed)
+{
+    if (m_audioThread)       m_audioThread->setSpeed(speed);       // 音频 atempo
+    if (m_videoDecodeThread) m_videoDecodeThread->setSpeed(speed); // 视频帧时长
+}
+
 
 

@@ -258,6 +258,11 @@ bool VideoDecodeThread::getPlayDone()
     return false;
 }
 
+void VideoDecodeThread::setSpeed(double speed)
+{
+    m_videoRenderThread->setSpeed(speed);
+}
+
 void VideoDecodeThread::setSynpts(long long synpts)
 {
     m_videoRenderThread->synpts.store(synpts);

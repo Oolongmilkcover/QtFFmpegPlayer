@@ -89,6 +89,9 @@ public:
 
     void setHasPlayList(bool has);
 
+    // 倍速：同时设置音频 atempo 和视频帧时长
+    void setSpeed(double speed);
+
 private slots:
     void setDone();
 

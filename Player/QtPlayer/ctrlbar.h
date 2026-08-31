@@ -35,6 +35,8 @@ signals:
     void rewind();
     void prevFrame(int mode);
     void nextFrame(int mode);
+    void filterChanged(int type);
+    void speedChanged(double speed);
 public slots:
     void setPausePictrue(bool isPause);
 
@@ -88,6 +90,7 @@ private:
     bool m_isVolumeSliderPress = false;
     bool m_isSliderInit = false;
     bool m_isPlayLiseShow = false;
+    double m_speed = 1.0;
 };
 
 #endif // CTRLBAR_H

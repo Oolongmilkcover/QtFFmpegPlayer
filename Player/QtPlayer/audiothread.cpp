@@ -5,6 +5,12 @@ extern"C"{
 #include "libavcodec/codec_par.h"
 #include "libavcodec/avcodec.h"
 #include "libswresample/swresample.h"
+
+//倍速用到的 avfilter 头
+#include "libavfilter/avfilter.h"
+#include "libavfilter/buffersrc.h"
+#include "libavfilter/buffersink.h"
+#include "libavutil/channel_layout.h"
 }
 
 AudioThread::AudioThread(int frameQueSize , bool keep_last )
@@ -59,6 +65,12 @@ bool AudioThread::open(AVStream *audioStream)
         qDebug()<<"audioPlayerInit  failed!" ;
         return false;
     }
+    // 初始化倍速滤镜（默认 1.0 倍）
+    if (!initAtempoFilter(1.0)) {
+        qDebug() << "initAtempoFilter failed!";
+        return false;
+    }
+
     return true;
 }
 
@@ -85,6 +97,9 @@ void AudioThread::close()
         swr_free(&m_swr_ctx);
         m_swr_ctx = nullptr;
     }
+
+    freeAtempoFilter();
+
     if (m_auPlayer) {
         m_auPlayer->close();
     }
@@ -193,131 +208,143 @@ void AudioThread::decodeRun()
 
     while (!m_isExit)
     {
-        // 1. 从 PacketQueue 获取AVPacket
-        //qDebug() << "AudioThread::decodeRun m_pktQue.size()"<<m_pktQue->size();
-        auto packet = m_pktQue->pop(true);
-        if (!packet)
-        {
-            if (m_isExit)
-                break;
-
-            continue;
+        //速度变化时在解码线程里重建滤镜
+        double desired = m_desiredSpeed.load();
+        if (desired != m_currentSpeed) {
+            qDebug() << "speed change:" << m_currentSpeed << "->" << desired;
+            if (initAtempoFilter(desired)) {
+                // 重建成功，丢弃旧滤镜内部的残留数据（可接受）
+            } else {
+                // 重建失败：把目标速度改回当前值，避免死循环重试
+                m_desiredSpeed.store(m_currentSpeed);
+            }
         }
 
-        // 当前packet属于哪个serial
+        // 1. 从 PacketQueue 获取 AVPacket（原逻辑不变）
+        auto packet = m_pktQue->pop(true);
+        if (!packet) {
+            if (m_isExit) break;
+            continue;
+        }
         int pktSerial = packet->m_serial;
 
-        // 2. 发送给FFmpeg解码器
-        if (!send(packet))
-        {
-            continue;
-        }
-        // 3. 一个packet可能解码出多个AVFrame
-        while (!m_isExit)
-        {
+        if (!send(packet)) continue;
+
+        // 3. 一个 packet 可能解码出多个 AVFrame
+        while (!m_isExit) {
             AVFrame *decodedFrame = recv();
+            if (!decodedFrame) break;
 
-            if (!decodedFrame)
-            {
-                break;
-            }
-
-            // seek之后的旧packet直接丢弃
-            if (pktSerial != m_serial.load())
-            {
+            // seek 之后的旧 packet 直接丢弃（原逻辑）
+            if (pktSerial != m_serial.load()) {
                 av_frame_free(&decodedFrame);
                 continue;
             }
+
+            // 计算输入 pts（毫秒）
             int64_t raw = decodedFrame->pts;
             if (raw == AV_NOPTS_VALUE) raw = decodedFrame->best_effort_timestamp;
             if (raw == AV_NOPTS_VALUE) raw = 0;
             int64_t framePtsMs = av_rescale_q(raw, m_audioStream->time_base, {1, 1000});
 
-            // 4. 从FrameQueue获取一个可写位置
-            Frame *frame = m_frameQue->getWritable();
-            if (!frame)
-            {
+            // 先重采样到临时帧，再送入 atempo
+            AVFrame *resampled = av_frame_alloc();
+            if (!resampled) {
                 av_frame_free(&decodedFrame);
                 break;
             }
 
-            // 清空旧数据
-            av_frame_unref(frame->m_frame);
+            // 设置输出格式
+            resampled->format = m_outSampleFmt;
+            av_channel_layout_default(&resampled->ch_layout, m_outChannels);
+            resampled->sample_rate = m_outSampleRate;
 
-            // 5. 设置输出Frame格式
-            frame->m_frame->format = m_outSampleFmt;
-
-            av_channel_layout_default(
-                &frame->m_frame->ch_layout,
-                m_outChannels
-                );
-
-            frame->m_frame->sample_rate = m_outSampleRate;
-
-            // 输出容量
+            // 计算输出容量
             int maxSamples = av_rescale_rnd(
-                swr_get_delay(
-                    m_swr_ctx,
-                    m_codec_ctx->sample_rate
-                    ) + decodedFrame->nb_samples,
-                m_outSampleRate,
-                m_codec_ctx->sample_rate,
-                AV_ROUND_UP
-                )+256;
+                                 swr_get_delay(m_swr_ctx, m_codec_ctx->sample_rate)
+                                     + decodedFrame->nb_samples,
+                                 m_outSampleRate, m_codec_ctx->sample_rate, AV_ROUND_UP) + 256;
+            resampled->nb_samples = maxSamples;
 
-            frame->m_frame->nb_samples = maxSamples;
-
-            // 分配输出buffer
-            if (av_frame_get_buffer(frame->m_frame, 0) < 0)
-            {
-                av_frame_unref(frame->m_frame);
+            if (av_frame_get_buffer(resampled, 0) < 0) {
+                av_frame_free(&resampled);
                 av_frame_free(&decodedFrame);
                 continue;
             }
 
-            // 6. 重采样
-            int samples = swr_convert(
-                m_swr_ctx,
-                frame->m_frame->data,
-                frame->m_frame->nb_samples,
-
-                (const uint8_t **)decodedFrame->data,
-                decodedFrame->nb_samples
-                );
-
-            if (samples <= 0)
-            {
-                av_frame_unref(frame->m_frame);
+            // 重采样
+            int samples = swr_convert(m_swr_ctx,
+                                      resampled->data, resampled->nb_samples,
+                                      (const uint8_t **)decodedFrame->data,
+                                      decodedFrame->nb_samples);
+            if (samples <= 0) {
+                av_frame_free(&resampled);
                 av_frame_free(&decodedFrame);
                 continue;
             }
+            resampled->nb_samples = samples;
 
-            // 7. 设置实际样本数
-            frame->m_frame->nb_samples = samples;
+            // 重采样延迟补偿（你原来的 outPts 逻辑）
+            int64_t delayIn  = swr_get_delay(m_swr_ctx, m_codec_ctx->sample_rate);
+            int64_t delayOut = av_rescale_rnd(delayIn, m_outSampleRate,
+                                              m_codec_ctx->sample_rate, AV_ROUND_UP);
+            resampled->pts = framePtsMs - (delayOut * 1000LL / m_outSampleRate);
 
-            // 获取重采样内部延迟（输出采样率下的样本数）
-            int64_t delayIn = swr_get_delay(m_swr_ctx, m_codec_ctx->sample_rate);
-            int64_t delayOut = av_rescale_rnd(delayIn, m_outSampleRate, m_codec_ctx->sample_rate, AV_ROUND_UP);
-            // 输出帧的起始pts = 输入pts - 延迟对应的毫秒数
-            int64_t outPts = framePtsMs - (delayOut *1000LL / m_outSampleRate);
-            frame->m_frame->pts = outPts;
-
-
-            // 9. 保存serial
-            frame->m_serial = pktSerial;
-
-            // 10. AVFrame已经复制进FrameQueue
             av_frame_free(&decodedFrame);
 
-            // 11. 通知消费者
-            m_frameQue->push();
+            // 送入 atempo 滤镜
+            // atempo 有内部缓冲：
+            //  - 2 倍速时，可能送两帧才吐一帧
+            //  - 输出帧的 pts 由滤镜按处理样本数自动推算（毫秒）
+            if (av_buffersrc_add_frame(m_buffersrcCtx, resampled) < 0) {
+                qDebug() << "buffersrc_add_frame failed";
+                av_frame_free(&resampled);
+                continue;
+            }
+            // add_frame 成功后滤镜持有引用，我们释放自己的引用
+            av_frame_free(&resampled);
+
+            // 从滤镜取输出帧，可能有 0 帧或多帧
+            while (true) {
+                AVFrame *outFrame = av_frame_alloc();
+                if (!outFrame) break;
+
+                int ret = av_buffersink_get_frame(m_buffersinkCtx, outFrame);
+                if (ret == AVERROR(EAGAIN)) {
+                    // 滤镜内部缓冲还不够，这轮没输出
+                    av_frame_free(&outFrame);
+                    break;
+                } else if (ret == AVERROR_EOF) {
+                    // 滤镜结束（正常播放不会走到这里）
+                    av_frame_free(&outFrame);
+                    break;
+                } else if (ret < 0) {
+                    av_frame_free(&outFrame);
+                    break;
+                }
+
+                // 拿到一帧变速后的音频，写入 FrameQueue
+                Frame *frame = m_frameQue->getWritable();
+                if (!frame) {
+                    // 队列满了（背压）：丢弃这一帧，退出取帧循环
+                    av_frame_free(&outFrame);
+                    break;
+                }
+
+                av_frame_unref(frame->m_frame);
+                av_frame_move_ref(frame->m_frame, outFrame);
+                av_frame_free(&outFrame);
+
+                // 输出帧的 pts 已经是毫秒（abuffer 的 time_base=1/1000）
+                // 这里无需再换算
+                frame->m_serial = pktSerial;
+                m_frameQue->push();
+            }
         }
         msleep(1);
     }
-
     qDebug() << "Audio decode thread end...";
 }
-
 
 void AudioThread::playRun()
 {
@@ -473,6 +500,96 @@ bool AudioThread::resampleInit()
     return true;
 }
 
+// 外部设置倍速：只记录目标值
+// 真正重建滤镜在解码线程里做，避免跨线程操作滤镜图
+void AudioThread::setSpeed(double speed)
+{
+    if (speed < 0.5) speed = 0.5;    // atempo 下限 0.5
+    if (speed > 2.0) speed = 2.0;    // 单实例上限 2.0
+    m_desiredSpeed.store(speed);
+}
 
 
+// 创建滤镜图：abuffer(输入) -> atempo(变速) -> abuffersink(输出)
+bool AudioThread::initAtempoFilter(double speed)
+{
+    // 0. 如果已经有旧图，先释放
+    freeAtempoFilter();
+    // 1. 分配滤镜图
+    m_filterGraph = avfilter_graph_alloc();
+    if (!m_filterGraph) {
+        qDebug() << "avfilter_graph_alloc failed";
+        return false;
+    }
+    // 2. 获取滤镜工厂
+    const AVFilter *srcFilter   = avfilter_get_by_name("abuffer");
+    const AVFilter *tempoFilter = avfilter_get_by_name("atempo");
+    const AVFilter *sinkFilter  = avfilter_get_by_name("abuffersink");
+    // 3. 创建"源"滤镜，描述输入音频格式
+    //    time_base=1/1000：之后帧的 pts 直接用毫秒
+    //    格式与 swr 重采样输出一致：S16 / 48000 / stereo
+    char srcArgs[256] = {0};
+    snprintf(srcArgs, sizeof(srcArgs),
+             "time_base=1/1000:sample_rate=%d:sample_fmt=%s:channel_layout=%s",
+             m_outSampleRate,
+             av_get_sample_fmt_name(m_outSampleFmt),
+             m_outChannels == 2 ? "stereo" : "mono");
+    if (avfilter_graph_create_filter(&m_buffersrcCtx, srcFilter, "in",
+                                     srcArgs, nullptr, m_filterGraph) < 0) {
+        qDebug() << "create abuffer failed";
+        freeAtempoFilter();
+        return false;
+    }
+    // 4. 创建 atempo 滤镜
+    //    注意：tempoArgs 必须紧贴使用，不能和 goto/return 混用
+    {
+        char tempoArgs[64] = {0};
+        snprintf(tempoArgs, sizeof(tempoArgs), "tempo=%.3f", speed);
+        if (avfilter_graph_create_filter(&m_tempoCtx, tempoFilter, "tempo",
+                                         tempoArgs, nullptr, m_filterGraph) < 0) {
+            qDebug() << "create atempo failed";
+            freeAtempoFilter();
+            return false;
+        }
+    }   // tempoArgs 出了作用域就销毁，不影响后续
+    // 5. 创建"汇"滤镜
+    if (avfilter_graph_create_filter(&m_buffersinkCtx, sinkFilter, "out",
+                                     nullptr, nullptr, m_filterGraph) < 0) {
+        qDebug() << "create abuffersink failed";
+        freeAtempoFilter();
+        return false;
+    }
+    // 6. 连接：源 -> atempo -> 汇
+    if (avfilter_link(m_buffersrcCtx, 0, m_tempoCtx, 0) < 0) {
+        qDebug() << "link src->tempo failed";
+        freeAtempoFilter();
+        return false;
+    }
+    if (avfilter_link(m_tempoCtx, 0, m_buffersinkCtx, 0) < 0) {
+        qDebug() << "link tempo->sink failed";
+        freeAtempoFilter();
+        return false;
+    }
+    // 7. 配置整个滤镜图（校验格式、分配内部缓冲）
+    if (avfilter_graph_config(m_filterGraph, nullptr) < 0) {
+        qDebug() << "avfilter_graph_config failed";
+        freeAtempoFilter();
+        return false;
+    }
+    m_currentSpeed = speed;
+    qDebug() << "atempo filter ready, speed =" << speed;
+    return true;
+}
 
+// 释放滤镜图（avfilter_graph_free 会连带释放里面的滤镜上下文）
+void AudioThread::freeAtempoFilter()
+{
+    if (m_filterGraph) {
+        avfilter_graph_free(&m_filterGraph);
+        m_filterGraph = nullptr;
+    }
+    // 这些指针是 graph 内部的，graph 释放后置空即可
+    m_buffersrcCtx  = nullptr;
+    m_tempoCtx      = nullptr;
+    m_buffersinkCtx = nullptr;
+}

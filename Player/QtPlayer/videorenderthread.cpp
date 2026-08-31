@@ -228,3 +228,13 @@ void VideoRenderThread::sleepUntil(qint64 targetWallMs)
         remain = targetWallMs - m_loopTimer.elapsed();
     }
 }
+
+// 设置倍速：重算帧时长
+// 2 倍速 = 每帧显示时间减半
+void VideoRenderThread::setSpeed(double speed)
+{
+    if (speed <= 0) speed = 1.0;
+    m_speed.store(speed);
+    m_frameDurationMs = 1000.0 / m_fps / speed;
+}
+

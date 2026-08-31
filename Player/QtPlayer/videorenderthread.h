@@ -17,14 +17,13 @@ public:
 
     explicit VideoRenderThread(FrameQueue* frameQueue);
     ~VideoRenderThread() override;
-    /*
-     * 设置VideoWidget
-     */
+    //设置VideoWidget
     void setWidget(VideoWidget* widget);
-    /*
-     * 设置视频帧率
-     */
+    //设置视频帧率
     void setFps(double fps);
+
+    // 设置倍速
+    void setSpeed(double speed);
     /*
      * 外部音频时钟
      *
@@ -65,6 +64,10 @@ private:
     FrameQueue* m_frameQueue = nullptr;
 
     double m_fps = 60;
+
+    // 倍速（视频帧时长 = 1000/fps/speed）
+    std::atomic<double> m_speed{1.0};
+
 
     double m_frameDurationMs = 1000.0 / m_fps;
 

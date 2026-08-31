@@ -59,6 +59,7 @@ find_library(AVFORMAT_LIB avformat PATHS ${FFMPEG_PATH}/lib NO_DEFAULT_PATH)
 find_library(AVUTIL_LIB avutil PATHS ${FFMPEG_PATH}/lib NO_DEFAULT_PATH)
 find_library(SWRESAMPLE_LIB swresample PATHS ${FFMPEG_PATH}/lib NO_DEFAULT_PATH)
 find_library(SWSCALE_LIB swscale PATHS ${FFMPEG_PATH}/lib NO_DEFAULT_PATH)
+find_library(AVFILTER_LIB avfilter PATHS ${FFMPEG_PATH}/lib NO_DEFAULT_PATH)
 
 # ========================== 链接库 ==========================
 target_link_libraries(QtPlayer PRIVATE
@@ -74,6 +75,7 @@ target_link_libraries(QtPlayer PRIVATE
     ${AVUTIL_LIB}
     ${SWRESAMPLE_LIB}
     ${SWSCALE_LIB}
+    ${AVFILTER_LIB}
 )
 
 

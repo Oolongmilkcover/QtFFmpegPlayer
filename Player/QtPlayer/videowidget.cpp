@@ -101,6 +101,13 @@ void VideoWidget::clearScreen()
     update();    // 触发 paintGL，进入 !datas[0] 分支 → 画黑
 }
 
+void VideoWidget::setFilterType(int type)
+{
+    if (type < 0 || type > 4) return;
+    m_filterType.store(type);
+    update();   // 触发重绘，shader 立刻应用新滤镜
+}
+
 
 
 void VideoWidget::setPaint(AVFrame *frame)
@@ -267,7 +274,8 @@ void VideoWidget::initializeGL()
     unis[2] = program.uniformLocation("tex_v");
 
 
-
+    // ==========滤镜 uniform ==========
+    m_filterLoc = program.uniformLocation("filterType");
 
     mux.unlock();
 }
@@ -288,6 +296,9 @@ void VideoWidget::paintGL()
     }
 
     program.bind();
+
+    //设置滤镜类型
+    glUniform1i(m_filterLoc, m_filterType.load());
 
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, texs[0]); //0层绑定到Y材质

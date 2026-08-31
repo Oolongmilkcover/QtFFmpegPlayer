@@ -1,6 +1,7 @@
 #include "ctrlbar.h"
 #include "ui_ctrlbar.h"
 #include<QDebug>
+#include<QMenu>
 CtrlBar::CtrlBar(QWidget *parent)
     : QWidget(parent)
     , ui(new Ui::CtrlBar)
@@ -150,13 +151,19 @@ void CtrlBar::on_nextBtn_clicked()
 
 void CtrlBar::on_slowdownBtn_clicked()
 {
-
+    m_speed -= 0.25;
+    if (m_speed < 0.25) m_speed = 0.25;
+    ui->speedLabel->setText(QString("倍速：%1").arg(m_speed));
+    emit speedChanged(m_speed);
 }
 
 
 void CtrlBar::on_speedupBtn_clicked()
 {
-
+    m_speed += 0.25;
+    if (m_speed > 2.0) m_speed = 2.0;
+    ui->speedLabel->setText(QString("倍速：%1").arg(m_speed));
+    emit speedChanged(m_speed);
 }
 
 
@@ -168,7 +175,22 @@ void CtrlBar::on_playListBtn_clicked()
 
 void CtrlBar::on_settingBtn_clicked()
 {
-
+    QMenu menu(this);
+    // 菜单项：原色/灰度/反色/暖色/冷色
+    QAction *actNormal = menu.addAction("原色");
+    QAction *actGray   = menu.addAction("灰度");
+    QAction *actInvert = menu.addAction("反色");
+    QAction *actWarm   = menu.addAction("暖色");
+    QAction *actCool   = menu.addAction("冷色");
+    // 在按钮下方弹出菜单
+    QAction *chosen = menu.exec(ui->settingBtn->mapToGlobal(
+        QPoint(0, ui->settingBtn->height())));
+    // 判断选中了哪个
+    if (chosen == actNormal) emit filterChanged(0);
+    else if (chosen == actGray)   emit filterChanged(1);
+    else if (chosen == actInvert) emit filterChanged(2);
+    else if (chosen == actWarm)   emit filterChanged(3);
+    else if (chosen == actCool)   emit filterChanged(4);
 }
 
 QString CtrlBar::msToString(int ms)

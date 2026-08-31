@@ -64,6 +64,8 @@ public:
 
     bool getPlayDone();
 
+    void setSpeed(double speed);
+
 private:
     std::atomic<bool> m_isPause = false;
     VideoWidget* m_widget;
