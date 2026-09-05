@@ -51,6 +51,9 @@ public:
     void setSpeed(double speed);          // 外部（GUI）调用，仅写原子变量
     double getSpeed() const { return m_desiredSpeed.load(); }
 
+    // 请求在解码线程里重置 swr 和 atempo（seek 后调用，线程安全）
+    void requestFilterReset() { m_needFilterReset.store(true); }
+
 private:
 
     // 解码线程
@@ -110,7 +113,7 @@ private:
     // 目标速度
     std::atomic<double> m_desiredSpeed{1.0};
     // 滤镜当前速度（解码线程读写）
-    double m_currentSpeed = 1.0;
+    std::atomic<double> m_currentSpeed{1.0};
     // 滤镜图
     AVFilterGraph   *m_filterGraph   = nullptr;
     // 源滤镜（喂数据）
@@ -120,6 +123,13 @@ private:
     // 汇滤镜（取数据）
     AVFilterContext  *m_buffersinkCtx = nullptr;
 
+    std::atomic<bool> m_needFilterReset{false};
+    // 本次滤镜生命周期内，累计取出的输出样本数
+    int64_t m_outSamplesTotal = 0;
+    // 内容轴基准（重建滤镜时 = 当前音频内容时钟）
+    int64_t m_ptsBase = 0;
+    // 基准是否已用第一帧输入锚定
+    bool    m_ptsAnchorReady = false;
 };
 
 #endif

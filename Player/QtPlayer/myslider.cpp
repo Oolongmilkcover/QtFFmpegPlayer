@@ -4,7 +4,9 @@
 
 mySlider::mySlider(QWidget *parent)
     :QSlider(parent)
-{}
+{
+    this->setFocusPolicy(Qt::NoFocus);
+}
 
 
 

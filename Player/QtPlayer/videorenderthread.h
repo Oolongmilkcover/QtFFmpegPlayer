@@ -76,6 +76,9 @@ private:
     std::atomic<bool> m_isExit = false;
 
     std::atomic<bool> m_isPlayPrevFrame = false;
+
+    long long m_lastAudioPts = -1;   // 上一次的音频时钟（检测停摆）
+    int m_stallCount = 0;            // 连续停摆次数
 };
 
 #endif // VIDEORENDERTHREAD_H

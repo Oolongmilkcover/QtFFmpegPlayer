@@ -20,6 +20,11 @@ CtrlBar::CtrlBar(QWidget *parent)
             background: none;
         }
         )");
+
+    for (QPushButton *btn : findChildren<QPushButton*>()) {
+        btn->setFocusPolicy(Qt::NoFocus);
+    }
+
     ui->nextBtn->setIcon(QIcon(":/workBtnPNG/nextBtn.png"));
     ui->nextBtn->setIconSize(ui->nextBtn->size());
 
@@ -114,20 +119,15 @@ void CtrlBar::volumeSliderRelease()
 
 void CtrlBar::on_playOrPauseBtn_clicked()
 {
+
     if(m_isPause){
-        //已经是暂停状态->播放状态
-        //图标变为已开始状态
-        ui->playOrPauseBtn->setIcon(QIcon(":/workBtnPNG/pauseBtn.png"));
-        ui->playOrPauseBtn->setIconSize(ui->playOrPauseBtn->size());
+        m_isPause = !m_isPause;
         emit play();
     }else{
-        //目前是播放状态->暂停状态
-        //图标变为已暂停状态
-        ui->playOrPauseBtn->setIcon(QIcon(":/workBtnPNG/startBtn.png"));
-        ui->playOrPauseBtn->setIconSize(ui->playOrPauseBtn->size());
+        m_isPause = !m_isPause;
         emit pause();
     }
-    m_isPause = !m_isPause;
+
 }
 
 
@@ -151,19 +151,19 @@ void CtrlBar::on_nextBtn_clicked()
 
 void CtrlBar::on_slowdownBtn_clicked()
 {
-    m_speed -= 0.25;
-    if (m_speed < 0.25) m_speed = 0.25;
-    ui->speedLabel->setText(QString("倍速：%1").arg(m_speed));
-    emit speedChanged(m_speed);
+    m_speed -= 0.1;
+    if (m_speed < 0.5) m_speed = 0.5;
+    ui->speedLabel->setText(QString("倍速:%1").arg(m_speed));
+    emit speedChanged(-0.1);
 }
 
 
 void CtrlBar::on_speedupBtn_clicked()
 {
-    m_speed += 0.25;
+    m_speed += 0.1;
     if (m_speed > 2.0) m_speed = 2.0;
-    ui->speedLabel->setText(QString("倍速：%1").arg(m_speed));
-    emit speedChanged(m_speed);
+    ui->speedLabel->setText(QString("倍速:%1").arg(m_speed));
+    emit speedChanged(0.1);
 }
 
 
@@ -268,6 +268,18 @@ void CtrlBar::stepFrameTime(bool flag)
     ui->slowdownBtn->setDisabled(flag);
     ui->playListBtn->setDisabled(flag);
 
+}
+
+void CtrlBar::setSpeedLabel(double speed)
+{
+    ui->speedLabel->setText(QString("倍速:%1").arg(speed));
+    m_speed = speed;   // 同步内部状态
+}
+
+void CtrlBar::setVolumeSlider(int value)
+{
+    if (m_isVolumeSliderPress) return;   // 用户正拖音量条时不强制更新
+    ui->volumeSlider->setValue(value);
 }
 
 void CtrlBar::resizeEvent(QResizeEvent *event)

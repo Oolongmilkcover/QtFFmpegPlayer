@@ -194,10 +194,17 @@ void VideoRenderThread::run()
 
         //视频-音频
         long long diff = videoPts - audioPts;
-        //qDebug()<<"videoPts"<<videoPts<<"audioPts"<<audioPts<<"videoPts"<<diff;
-        //视频超前
+        //qDebug()<<"videoPts"<<videoPts<<"audioPts"<<audioPts<<"diff"<<diff;
+        // //视频超前
+        static int a = 1;
         if (diff > 50)
         {
+            if (audioPts == m_lastAudioPts) {
+                // 强制消费这一帧（宁可跳帧），释放背压，让闭环断开
+                m_frameQueue->next();
+            } else {
+                m_lastAudioPts = audioPts;
+            }
             lastFrameWallMs = m_loopTimer.elapsed();
             sleepUntil(lastFrameWallMs + (m_frameDurationMs));
             continue;
@@ -215,6 +222,7 @@ void VideoRenderThread::run()
             continue;
         }
         // 落后音频：丢帧
+        //qDebug() << "落后音频：丢帧";
         m_frameQueue->next();
     }
     qDebug() << "VideoRenderThread end...";

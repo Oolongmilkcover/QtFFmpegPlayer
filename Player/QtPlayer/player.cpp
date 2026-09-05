@@ -24,12 +24,14 @@ Player::Player(QWidget *parent)
     setMinimumSize(432+12, 243+ui->ctrlbar->height()+ui->topMenu->height()+12);       // 最小限制（16:9）
     ui->video->setFixedSize(1280, 720);
 
-    //边缘缩放
+    //边缘缩放  给所有可能抢焦点的子控件装过滤器
     ui->video->installEventFilter(this);
     ui->ctrlbar->installEventFilter(this);
+    ui->playList->getListWidget()->installEventFilter(this);
 
     ui->video->setGeometry(0, 0, width(), height());
 
+    //---------------------------------------------------------------------------
     //播放列表初始化
     ui->dockWidget->setFeatures(QDockWidget::NoDockWidgetFeatures);
     ui->dockWidget->setFixedWidth(m_playListWidth);
@@ -53,16 +55,11 @@ Player::Player(QWidget *parent)
     });
 
 
+    //---------------------------------------------------------------------------
     //底部控制按键组信号操作
     //开始与暂停按钮控制
-    connect(ui->ctrlbar, &CtrlBar::play, this,[this]{
-        ui->ctrlbar->stepFrameTime(false);
-        ui->topMenu->stepFrameTime(false);
-        m_isPrevFramePlay = false;
-        m_stepFrame = false;
-        dt.setPause(false);
-    });
-    connect(ui->ctrlbar, &CtrlBar::pause, this,[this]{dt.setPause(true);});
+    connect(ui->ctrlbar, &CtrlBar::play, this,&Player::play);
+    connect(ui->ctrlbar, &CtrlBar::pause, this,&Player::pause);
     connect(ui->ctrlbar, &CtrlBar::setVolume, this,&Player::setVolume);
     connect(this,&Player::setPausePicture,ui->ctrlbar, &CtrlBar::setPausePictrue);
     //停止播放
@@ -88,9 +85,7 @@ Player::Player(QWidget *parent)
     //上一帧
     connect(ui->ctrlbar, &CtrlBar::prevFrame, this, &Player::stepFrame);
     //倍速
-    connect(ui->ctrlbar, &CtrlBar::speedChanged, this, [this](double speed){
-        dt.setSpeed(speed);
-    });
+    connect(ui->ctrlbar, &CtrlBar::speedChanged, this, &Player::changeSpeed);
     //滤镜切换
     connect(ui->ctrlbar, &CtrlBar::filterChanged, this, [this](int type){
         ui->video->setFilterType(type);
@@ -120,6 +115,7 @@ Player::Player(QWidget *parent)
 
     //---------------------------------------------------------------------------
     //播放列表
+
     //播这个
     connect(ui->playList->getListWidget(), &QListWidget::itemDoubleClicked,
             this, &Player::on_playList_doubleClicked);
@@ -206,9 +202,10 @@ void Player::on_openFile_clicked()
 
 void Player::setVolume(double pos)
 {
-    if(m_isInit){
-        dt.setVolume(pos);
-    }
+    // if(m_isInit){
+    //    dt.setVolume(pos);
+    // }
+    dt.setVolume(pos);
     m_nowVolume = pos;
 }
 
@@ -245,6 +242,7 @@ void Player::toggleFullScreen()
 
 void Player::stopToPlay()
 {
+    if(!m_isInit) return;
     setPausePicture(true);
     dt.close();
     ui->video->clearScreen();
@@ -315,7 +313,12 @@ void Player::playFile(const QString &path)
     m_videoSrcW = dt.m_width;
     m_videoSrcH = dt.m_height;
     update();
-    setPausePicture(dt.getIsPause());
+    //setPausePicture(dt.getIsPause());
+    if(!dt.getIsPause()){
+        play();
+    }else{
+        pause();
+    }
 }
 
 void Player::playNext()
@@ -371,21 +374,42 @@ void Player::rewindSeekFiveSec()
 void Player::stepFrame(int mode)
 {
     if(!m_isInit) return;
+    m_isPause = true;
     ui->ctrlbar->setPausePictrue(true);
     //按钮设置不可用
     ui->ctrlbar->stepFrameTime(true);
     ui->topMenu->stepFrameTime(true);
     if(mode == 1){
-        m_isPrevFramePlay = false;
         m_stepFrame = true;
         dt.stepNextFrame();
     }else{
-        if(m_isPrevFramePlay) return;
         m_stepFrame = true;
         dt.stepPrevFrame();
-        m_isPrevFramePlay = true;
     }
 }
+
+void Player::adjustVolume(double delta)
+{
+    if(!m_isInit) return;
+    double vol = m_nowVolume + delta;
+    if (vol > 1.0) vol = 1.0;
+    if (vol < 0.0) vol = 0.0;
+    m_nowVolume = vol;
+    setVolume(vol);   // 会同步 UI 滑块和 dt.setVolume
+    // 同步 CtrlBar 音量滑块显示
+    ui->ctrlbar->setVolumeSlider(vol * 100);   // 需要 CtrlBar 提供这个方法
+}
+
+void Player::changeSpeed(double delta)
+{
+    double newSpeed = m_speed + delta;
+    if (newSpeed < 0.5) newSpeed = 0.5;
+    if (newSpeed > 2.0)  newSpeed = 2.0;
+    m_speed = newSpeed;
+    dt.setSpeed(m_speed);
+    ui->ctrlbar->setSpeedLabel(m_speed);
+}
+
 
 
 
@@ -393,7 +417,7 @@ void Player::stepFrame(int mode)
 
 void Player::sliderSeek(double pos)
 {
-    dt.seek(pos);
+    if(m_isInit) dt.seek(pos);
 }
 
 void Player::timerEvent(QTimerEvent *e)
@@ -479,8 +503,44 @@ bool Player::eventFilter(QObject *watched, QEvent *event)
 
 void Player::keyPressEvent(QKeyEvent *e)
 {
-    if (e->key() == Qt::Key_Escape && m_isFullScreen) {
-        toggleFullScreen();   // 退出全屏
+    if(!m_isInit) return;
+    int key = e->key();
+    switch(key){
+    case Qt::Key_Space:
+        if(m_isPause){
+            play();
+        }else{
+            pause();
+        }
+        return;
+    case Qt::Key_Escape:
+        if (m_isFullScreen) toggleFullScreen();
+        return;
+    case Qt::Key_Right:   // 快进
+        ffSeekFiveSec();
+        return;
+    case Qt::Key_Left:    // 快退
+        rewindSeekFiveSec();
+        return;
+    case Qt::Key_Up:      // 音量+
+        adjustVolume(+0.05);
+        return;
+    case Qt::Key_Down:    // 音量-
+        adjustVolume(-0.05);
+        return;
+    case Qt::Key_X:       // 降速
+        changeSpeed(-0.1);
+        return;
+    case Qt::Key_C:       // 升速
+        changeSpeed(0.1);
+        return;
+    case Qt::Key_F:       // 下一帧
+        stepFrame(1);
+        return;
+    case Qt::Key_D:       // 上一帧
+        stepFrame(2);
+        return;
+    default:
         return;
     }
     QWidget::keyPressEvent(e);
@@ -575,4 +635,23 @@ void Player::addToPlayList(const QString &path)
 {
     ui->playList->addFile(path);
     dt.setHasPlayList(true);
+}
+
+void Player::play()
+{
+    if(!m_isInit) return;
+    ui->ctrlbar->stepFrameTime(false);
+    ui->ctrlbar->setPausePictrue(false);
+    ui->topMenu->stepFrameTime(false);
+    m_stepFrame = false;
+    m_isPause = false;
+    dt.setPause(false);
+}
+
+void Player::pause()
+{
+    if(!m_isInit) return;
+    ui->ctrlbar->setPausePictrue(true);
+    m_isPause = true;
+    dt.setPause(true);
 }

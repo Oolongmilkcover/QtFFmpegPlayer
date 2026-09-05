@@ -112,7 +112,7 @@ void AudioThread::clear()
 {
     if (m_pktQue)   m_pktQue->clear();
     if (m_frameQue) m_frameQue->clear();
-    if (m_auPlayer) m_auPlayer->clear();
+    //if (m_auPlayer) m_auPlayer->clear();
     pts = 0;
     m_audioPts.store(0);
 }
@@ -170,10 +170,14 @@ long long AudioThread::getPts()
     // 最后写入的帧 pts"
     long long lastPts = m_audioPts.load();
     // 声卡未播时长
-    long long noPlay = m_auPlayer->getNoPlayMs();
-    long long clock = lastPts - noPlay;
+    long long noPlayReal = m_auPlayer->getNoPlayMs();
+    // 换算成内容轴时长：输出样本 × speed = 内容样本
+    long long noPlayContent = (long long)((double)noPlayReal
+                       * m_currentSpeed.load());
+    long long clock = lastPts - noPlayContent;
     if (clock < 0) clock = 0;
     pts.store(clock);
+    // qDebug()<<"clock"<<clock;
     return clock;
 }
 
@@ -205,18 +209,34 @@ double AudioThread::getVolume()
 void AudioThread::decodeRun()
 {
     qDebug() << "Audio decode thread running...";
-
     while (!m_isExit)
     {
+        //seek 后的复位：清 swr 延迟 + 重建 atempo（丢弃 seek 前残留）
+        if (m_needFilterReset.exchange(false)) {
+            std::lock_guard<std::mutex> lock(m_auMutex);
+            if (m_swr_ctx) {
+                // swr_init 会重置内部缓冲和延迟
+                swr_init(m_swr_ctx);
+            }
+            // 重建滤镜 = 丢弃 seek 前 atempo 内部的旧样本
+            initAtempoFilter(m_currentSpeed);
+        }
+
         //速度变化时在解码线程里重建滤镜
         double desired = m_desiredSpeed.load();
-        if (desired != m_currentSpeed) {
+        if (desired != m_currentSpeed.load()) {
             qDebug() << "speed change:" << m_currentSpeed << "->" << desired;
             if (initAtempoFilter(desired)) {
                 // 重建成功，丢弃旧滤镜内部的残留数据（可接受）
+                std::lock_guard<std::mutex> lock(m_auMutex);
+                if (m_swr_ctx) {
+                    // swr_init 会重置内部缓冲和延迟
+                    swr_init(m_swr_ctx);
+                }
             } else {
                 // 重建失败：把目标速度改回当前值，避免死循环重试
                 m_desiredSpeed.store(m_currentSpeed);
+                qDebug() << "重建失败：把目标速度改回当前值，避免死循环重试" << desired;
             }
         }
 
@@ -284,13 +304,18 @@ void AudioThread::decodeRun()
             }
             resampled->nb_samples = samples;
 
-            // 重采样延迟补偿（你原来的 outPts 逻辑）
+            // 重采样延迟补偿（原来的 outPts 逻辑）
             int64_t delayIn  = swr_get_delay(m_swr_ctx, m_codec_ctx->sample_rate);
             int64_t delayOut = av_rescale_rnd(delayIn, m_outSampleRate,
                                               m_codec_ctx->sample_rate, AV_ROUND_UP);
             resampled->pts = framePtsMs - (delayOut * 1000LL / m_outSampleRate);
 
             av_frame_free(&decodedFrame);
+
+            if (!m_ptsAnchorReady) {
+                m_ptsBase = resampled->pts;   // 第一帧输入的内容 pts（毫秒）
+                m_ptsAnchorReady = true;
+            }
 
             // 送入 atempo 滤镜
             // atempo 有内部缓冲：
@@ -306,6 +331,7 @@ void AudioThread::decodeRun()
 
             // 从滤镜取输出帧，可能有 0 帧或多帧
             while (true) {
+                // qDebug()<<"AVFrame *outFrame = av_frame_alloc() 前";
                 AVFrame *outFrame = av_frame_alloc();
                 if (!outFrame) break;
 
@@ -331,6 +357,17 @@ void AudioThread::decodeRun()
                     break;
                 }
 
+                //把"播放轴 pts"重映射为"内容轴 pts"
+                // atempo 输出帧的 pts 按输出样本数累加（播放轴），
+                // 2 倍速时它只有内容轴的一半，会和视频 pts 错位，
+                // 导致视频渲染线程 diff 恒大于阈值 → 帧队列堵死 → 背压冻结。
+                // 内容轴 pts = 基准 + (本帧之前已输出的样本数 × speed) 换算的时长
+                m_outSamplesTotal += outFrame->nb_samples;
+                outFrame->pts = m_ptsBase +
+                                (int64_t)((double)(m_outSamplesTotal - outFrame->nb_samples)
+                                           * m_currentSpeed.load()
+                                           * 1000.0 / m_outSampleRate);
+
                 av_frame_unref(frame->m_frame);
                 av_frame_move_ref(frame->m_frame, outFrame);
                 av_frame_free(&outFrame);
@@ -354,11 +391,9 @@ void AudioThread::playRun()
     {
         if (m_isPause.load())
         {
-            qDebug() << "m_isPause";
             msleep(1);
             continue;
         }
-
         Frame *frame = m_frameQue->getReadable();
         if (!frame)
         {
@@ -442,11 +477,14 @@ void AudioThread::playRun()
 
         if (m_isExit)
             break;
-        long long frameDurationMs = audioFrame->nb_samples * 1000LL / m_outSampleRate;
+        long long frameDurationMs =
+            (long long)((double)audioFrame->nb_samples
+                                                 * m_currentSpeed.load()
+                                                 * 1000.0 / m_outSampleRate);
         //音频同步  可能是seek回来后这时候serial不同
         if(thisSerial != m_serial){
             //这里是seek回来的情况
-            //demux已经设置过了
+            //demux已经设置过pts了
         }else{
             m_audioPts.store(audioFrame->pts + frameDurationMs);
         }
@@ -576,7 +614,11 @@ bool AudioThread::initAtempoFilter(double speed)
         freeAtempoFilter();
         return false;
     }
-    m_currentSpeed = speed;
+    m_currentSpeed.store(speed);
+    //  下一帧送入滤镜的"实际输入 pts"才是内容基准
+    m_outSamplesTotal = 0;
+    m_ptsAnchorReady = false;
+
     qDebug() << "atempo filter ready, speed =" << speed;
     return true;
 }
@@ -584,6 +626,7 @@ bool AudioThread::initAtempoFilter(double speed)
 // 释放滤镜图（avfilter_graph_free 会连带释放里面的滤镜上下文）
 void AudioThread::freeAtempoFilter()
 {
+    //std::lock_guard<std::mutex> lock(m_mutex);
     if (m_filterGraph) {
         avfilter_graph_free(&m_filterGraph);
         m_filterGraph = nullptr;

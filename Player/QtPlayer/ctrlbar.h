@@ -50,6 +50,9 @@ public slots:
 
     void stepFrameTime(bool flag);
 
+    void setSpeedLabel(double speed);
+    void setVolumeSlider(int value);   // 0~100
+
 protected:
     void resizeEvent(QResizeEvent *event) override;
 

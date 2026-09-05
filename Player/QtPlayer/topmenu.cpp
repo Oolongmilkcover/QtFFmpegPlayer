@@ -35,6 +35,10 @@ TopMenu::TopMenu(QWidget *parent)
 
     ui->playerName->setAttribute(Qt::WA_TransparentForMouseEvents);
     ui->fileName->setAttribute(Qt::WA_TransparentForMouseEvents);
+
+    for (QPushButton *btn : findChildren<QPushButton*>()) {
+        btn->setFocusPolicy(Qt::NoFocus);
+    }
 }
 
 TopMenu::~TopMenu()
@@ -147,6 +151,11 @@ void TopMenu::mouseReleaseEvent(QMouseEvent *e)
 {
     m_isDragging = false;
     QWidget::mouseReleaseEvent(e);
+}
+
+void TopMenu::keyPressEvent(QKeyEvent *e)
+{
+    return;
 }
 
 void TopMenu::resizeEvent(QResizeEvent *e)

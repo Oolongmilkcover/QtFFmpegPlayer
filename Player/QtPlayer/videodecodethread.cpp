@@ -89,6 +89,7 @@ bool VideoDecodeThread::repaintPts(AVPacket *pkt, int64_t seekpts,int serial)
             m_codec_ctx->skip_frame = original_skip;
             paint(frame);
             m_videoRenderThread->pts.store(seekpts);
+            //seekpts = frameMs;
             found = true;
         } else {
             av_frame_free(&frame);

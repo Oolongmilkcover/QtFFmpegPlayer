@@ -59,6 +59,9 @@ signals:
 
     void maxOrRestore();
 private slots:
+    void play();
+
+    void pause();
     //进度条
     void sliderSeek(double pos);
 
@@ -89,8 +92,14 @@ private slots:
     void rewindSeekFiveSec();
 
     void stepFrame(int mode);
+
+    void adjustVolume(double delta);
+
+    void changeSpeed(double delta);
 private:
     Ui::Player *ui;
+
+    bool m_isPause = false;
 
     bool isSliderPress = false;
     DemuxThread dt;
@@ -134,5 +143,7 @@ private:
     bool m_isPrevFramePlay = false;
 
     bool m_stepFrame = false;
+
+    double m_speed = 1.0;
 };
 #endif // PLAYER_H

@@ -341,6 +341,10 @@ void DemuxThread::run()
             }
             // 3. 更新 serial
             m_audioThread->setSerial(serial);
+            //m_audioThread->sendPts(seekMs);
+
+            //复位音频重采样器与 atempo 滤镜
+            m_audioThread->requestFilterReset();
 
             // 6. 恢复暂停状态
             setPause(wasPause);
@@ -387,6 +391,7 @@ void DemuxThread::run()
             msleep(5);
             continue;
         }
+        static int a = 0;
         // 判断数据是音频
         if(pkt->stream_index == m_videoStream && m_videoDecodeThread){
             //视频
@@ -397,6 +402,7 @@ void DemuxThread::run()
         }else{
             av_packet_free(&pkt);
         }
+        //qDebug()<<"mutexThread->push";
         msleep(2);
     }
 }
@@ -424,8 +430,8 @@ void DemuxThread::setHasPlayList(bool has)
 }
 
 void DemuxThread::setSpeed(double speed)
-{
-    if (m_audioThread)       m_audioThread->setSpeed(speed);       // 音频 atempo
+{    
+    if (m_audioThread)       m_audioThread->setSpeed(speed);// 音频 atempo
     if (m_videoDecodeThread) m_videoDecodeThread->setSpeed(speed); // 视频帧时长
 }
 
