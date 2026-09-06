@@ -280,6 +280,13 @@ void CtrlBar::setVolumeSlider(int value)
 {
     if (m_isVolumeSliderPress) return;   // 用户正拖音量条时不强制更新
     ui->volumeSlider->setValue(value);
+    if(value==0){
+        ui->volume->setIcon(QIcon(":/workBtnPNG/volumeNoneBtn.png"));
+        ui->volume->setIconSize(ui->volume->size());
+    }else{
+        ui->volume->setIcon(QIcon(":/workBtnPNG/volumeBtn.png"));
+        ui->volume->setIconSize(ui->volume->size());
+    }
 }
 
 void CtrlBar::resizeEvent(QResizeEvent *event)
