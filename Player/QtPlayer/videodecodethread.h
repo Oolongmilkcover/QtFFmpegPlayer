@@ -48,6 +48,9 @@ public:
     //设置fps
     void setFps(AVStream* videoStream);
 
+    //有没有音频
+    void setHasAudio(bool flag);
+
     // 完全停止并释放解码器
     void close();
 

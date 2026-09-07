@@ -31,7 +31,8 @@ public:
      *
      * VideoRenderThread只读取
      */
-    std::atomic<long long> synpts = 0;
+    std::atomic<long long> synpts = -1;
+    std::atomic<bool> hasAudio{true};
     //音频是否已经结束
     std::atomic<bool> lastSome = false;
     std::atomic<int> serial = 0;

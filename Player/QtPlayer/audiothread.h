@@ -54,6 +54,7 @@ public:
     // 请求在解码线程里重置 swr 和 atempo（seek 后调用，线程安全）
     void requestFilterReset() { m_needFilterReset.store(true); }
 
+
 private:
 
     // 解码线程

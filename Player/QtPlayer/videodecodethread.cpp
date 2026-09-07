@@ -204,6 +204,11 @@ void VideoDecodeThread::setFps(AVStream* videoStream)
     //qDebug()<<"av_q2d(videoStream->avg_frame_rate)"<<av_q2d(videoStream->avg_frame_rate);
 }
 
+void VideoDecodeThread::setHasAudio(bool flag)
+{
+    m_videoRenderThread->hasAudio = flag;
+}
+
 void VideoDecodeThread::close()
 {
     // 先停渲染线程并 join —— 它是 FrameQueue 的消费者

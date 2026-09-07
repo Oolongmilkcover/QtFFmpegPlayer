@@ -310,72 +310,91 @@ void AudioThread::decodeRun()
                                               m_codec_ctx->sample_rate, AV_ROUND_UP);
             resampled->pts = framePtsMs - (delayOut * 1000LL / m_outSampleRate);
 
+
             av_frame_free(&decodedFrame);
 
             if (!m_ptsAnchorReady) {
                 m_ptsBase = resampled->pts;   // 第一帧输入的内容 pts（毫秒）
                 m_ptsAnchorReady = true;
             }
-
-            // 送入 atempo 滤镜
-            // atempo 有内部缓冲：
-            //  - 2 倍速时，可能送两帧才吐一帧
-            //  - 输出帧的 pts 由滤镜按处理样本数自动推算（毫秒）
-            if (av_buffersrc_add_frame(m_buffersrcCtx, resampled) < 0) {
-                qDebug() << "buffersrc_add_frame failed";
-                av_frame_free(&resampled);
-                continue;
-            }
-            // add_frame 成功后滤镜持有引用，我们释放自己的引用
-            av_frame_free(&resampled);
-
-            // 从滤镜取输出帧，可能有 0 帧或多帧
-            while (true) {
-                // qDebug()<<"AVFrame *outFrame = av_frame_alloc() 前";
-                AVFrame *outFrame = av_frame_alloc();
-                if (!outFrame) break;
-
-                int ret = av_buffersink_get_frame(m_buffersinkCtx, outFrame);
-                if (ret == AVERROR(EAGAIN)) {
-                    // 滤镜内部缓冲还不够，这轮没输出
-                    av_frame_free(&outFrame);
-                    break;
-                } else if (ret == AVERROR_EOF) {
-                    // 滤镜结束（正常播放不会走到这里）
-                    av_frame_free(&outFrame);
-                    break;
-                } else if (ret < 0) {
-                    av_frame_free(&outFrame);
-                    break;
-                }
-
-                // 拿到一帧变速后的音频，写入 FrameQueue
+            //原速时不走atempo
+            if(m_currentSpeed.load() >= 0.999 && m_currentSpeed.load() <= 1.001){
                 Frame *frame = m_frameQue->getWritable();
                 if (!frame) {
-                    // 队列满了（背压）：丢弃这一帧，退出取帧循环
-                    av_frame_free(&outFrame);
+                    av_frame_free(&resampled);
                     break;
                 }
-
-                //把"播放轴 pts"重映射为"内容轴 pts"
-                // atempo 输出帧的 pts 按输出样本数累加（播放轴），
-                // 2 倍速时它只有内容轴的一半，会和视频 pts 错位，
-                // 导致视频渲染线程 diff 恒大于阈值 → 帧队列堵死 → 背压冻结。
-                // 内容轴 pts = 基准 + (本帧之前已输出的样本数 × speed) 换算的时长
-                m_outSamplesTotal += outFrame->nb_samples;
-                outFrame->pts = m_ptsBase +
-                                (int64_t)((double)(m_outSamplesTotal - outFrame->nb_samples)
-                                           * m_currentSpeed.load()
-                                           * 1000.0 / m_outSampleRate);
-
                 av_frame_unref(frame->m_frame);
-                av_frame_move_ref(frame->m_frame, outFrame);
-                av_frame_free(&outFrame);
-
-                // 输出帧的 pts 已经是毫秒（abuffer 的 time_base=1/1000）
-                // 这里无需再换算
+                int64_t tmpPts = resampled->pts;
+                av_frame_move_ref(frame->m_frame, resampled);
+                frame->m_frame->pts = tmpPts;
                 frame->m_serial = pktSerial;
+                av_frame_free(&resampled);
                 m_frameQue->push();
+                //qDebug()<<tmpPts;
+            }
+            else
+            {
+                // 送入 atempo 滤镜
+                // atempo 有内部缓冲：
+                //  - 2 倍速时，可能送两帧才吐一帧
+                //  - 输出帧的 pts 由滤镜按处理样本数自动推算（毫秒）
+                if (av_buffersrc_add_frame(m_buffersrcCtx, resampled) < 0) {
+                    qDebug() << "buffersrc_add_frame failed";
+                    av_frame_free(&resampled);
+                    continue;
+                }
+                // add_frame 成功后滤镜持有引用，我们释放自己的引用
+                av_frame_free(&resampled);
+
+                // 从滤镜取输出帧，可能有 0 帧或多帧
+                while (true) {
+                    // qDebug()<<"AVFrame *outFrame = av_frame_alloc() 前";
+                    AVFrame *outFrame = av_frame_alloc();
+                    if (!outFrame) break;
+
+                    int ret = av_buffersink_get_frame(m_buffersinkCtx, outFrame);
+                    if (ret == AVERROR(EAGAIN)) {
+                        // 滤镜内部缓冲还不够，这轮没输出
+                        av_frame_free(&outFrame);
+                        break;
+                    } else if (ret == AVERROR_EOF) {
+                        // 滤镜结束（正常播放不会走到这里）
+                        av_frame_free(&outFrame);
+                        break;
+                    } else if (ret < 0) {
+                        av_frame_free(&outFrame);
+                        break;
+                    }
+
+                    // 拿到一帧变速后的音频，写入 FrameQueue
+                    Frame *frame = m_frameQue->getWritable();
+                    if (!frame) {
+                        // 队列满了（背压）：丢弃这一帧，退出取帧循环
+                        av_frame_free(&outFrame);
+                        break;
+                    }
+
+                    //把"播放轴 pts"重映射为"内容轴 pts"
+                    // atempo 输出帧的 pts 按输出样本数累加（播放轴），
+                    // 2 倍速时它只有内容轴的一半，会和视频 pts 错位，
+                    // 导致视频渲染线程 diff 恒大于阈值 → 帧队列堵死 → 背压冻结。
+                    // 内容轴 pts = 基准 + (本帧之前已输出的样本数 × speed) 换算的时长
+                    m_outSamplesTotal += outFrame->nb_samples;
+                    outFrame->pts = m_ptsBase +
+                                    (int64_t)((double)(m_outSamplesTotal - outFrame->nb_samples)
+                                               * m_currentSpeed.load()
+                                               * 1000.0 / m_outSampleRate);
+
+                    av_frame_unref(frame->m_frame);
+                    av_frame_move_ref(frame->m_frame, outFrame);
+                    av_frame_free(&outFrame);
+
+                    // 输出帧的 pts 已经是毫秒（abuffer 的 time_base=1/1000）
+                    // 这里无需再换算
+                    frame->m_serial = pktSerial;
+                    m_frameQue->push();
+                }
             }
         }
         msleep(1);

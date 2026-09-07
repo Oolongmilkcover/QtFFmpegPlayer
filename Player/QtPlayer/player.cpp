@@ -313,11 +313,15 @@ void Player::playFile(const QString &path)
     m_videoSrcW = dt.m_width;
     m_videoSrcH = dt.m_height;
     update();
+    resizeEvent(nullptr);
     //setPausePicture(dt.getIsPause());
     if(!dt.getIsPause()){
         play();
     }else{
         pause();
+    }
+    if (!dt.hasVideo()) {
+        ui->video->clearScreen();   // 纯音频：黑屏
     }
 }
 
@@ -379,12 +383,19 @@ void Player::stepFrame(int mode)
     //按钮设置不可用
     ui->ctrlbar->stepFrameTime(true);
     ui->topMenu->stepFrameTime(true);
+    bool success = false;
     if(mode == 1){
         m_stepFrame = true;
-        dt.stepNextFrame();
+        success = dt.stepNextFrame();
     }else{
         m_stepFrame = true;
-        dt.stepPrevFrame();
+        success = dt.stepPrevFrame();
+    }
+    if(!success){
+        m_isPause = false;
+        ui->ctrlbar->setPausePictrue(false);
+        ui->ctrlbar->stepFrameTime(false);
+        ui->topMenu->stepFrameTime(false);
     }
 }
 
@@ -427,7 +438,8 @@ void Player::timerEvent(QTimerEvent *e)
     long long total = dt.totalMs;
     if (total > 0)
     {
-        ui->ctrlbar->setSliderValue(dt.getVideoPts());
+        ui->ctrlbar->setSliderValue(dt.pts.load());
+        //qDebug()<<dt.pts.load();
     }
 }
 

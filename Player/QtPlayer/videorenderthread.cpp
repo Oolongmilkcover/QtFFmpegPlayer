@@ -8,7 +8,6 @@ extern "C"
 #include <QMetaObject>
 
 #include<algorithm>
-
 VideoRenderThread::VideoRenderThread(FrameQueue *frameQueue)
     :m_frameQueue(frameQueue)
     ,pts(0)
@@ -36,7 +35,7 @@ void VideoRenderThread::setFps(double fps)
         fps = 25.0;
     }
     m_fps = fps;
-    m_frameDurationMs = 1000.0 / m_fps;
+    m_frameDurationMs = 1000.0 / m_fps / m_speed;
     pts = 0;
 }
 
@@ -183,12 +182,13 @@ void VideoRenderThread::run()
         //音画同步
         long long audioPts = synpts.load();
 
-        // 如果音频时钟还没有开始 || 音频先结束了视频得正常播放，此时diff>>100
-        if (audioPts <= 0|| lastSome.load())
+        // 没有音频 || 音频先结束了视频得正常播放，此时diff>>100
+        if ( !hasAudio || lastSome.load())
         {
+            lastFrameWallMs = m_loopTimer.elapsed();
             renderFrame(frame);
             m_frameQueue->next();
-            sleepUntil(m_frameDurationMs);
+            sleepUntil(lastFrameWallMs + (m_frameDurationMs/2));
             continue;
         }
 
@@ -212,12 +212,12 @@ void VideoRenderThread::run()
         //视频稍微超前或者基本同步
         if (diff >= -50)  //50
         {
+            lastFrameWallMs = m_loopTimer.elapsed();
             //显示这一帧
             renderFrame(frame);
             //消费Frame
             m_frameQueue->next();
             //下一帧
-            lastFrameWallMs = m_loopTimer.elapsed();
             sleepUntil(lastFrameWallMs + (m_frameDurationMs/2));
             continue;
         }

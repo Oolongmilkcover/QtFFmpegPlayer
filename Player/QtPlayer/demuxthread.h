@@ -9,6 +9,7 @@ Seek 功能
 */
 
 #include "libavutil/rational.h"
+#include <QSet>
 #include <QThread>
 class AVFormatContext;
 class AVDictionary;
@@ -36,9 +37,9 @@ public:
     //结束逐帧
     void endFrameStep();
     //逐下帧
-    void stepNextFrame();
+    bool stepNextFrame();
     //回放上一帧
-    void stepPrevFrame();
+    bool stepPrevFrame();
 
 
     //跳转
@@ -92,6 +93,9 @@ public:
     // 倍速：同时设置音频 atempo 和视频帧时长
     void setSpeed(double speed);
 
+    //是否有视频流
+    bool hasVideo() const { return m_hasVideo; }
+
 private slots:
     void setDone();
 
@@ -121,6 +125,12 @@ private:
     //音视频流
     int m_videoStream = -1;
     int m_audioStream = -1;
+
+    //判断流是否存在
+    bool m_hasVideo = false;
+    bool m_hasAudio = false;
+
+
     //锁
     std::mutex m_mutex;
     //完成初始化了
@@ -140,6 +150,30 @@ private:
 
     //是否在逐帧
     std::atomic<bool> m_isFrameStep = false;
+
+    // 实际解析出来的封装名
+    QString m_containerName;
+    std::atomic<bool> m_disableSeekFlag{false};
+
+    // 纯音频，需要禁用Seek功能 的格式集合
+    const QSet<QString> m_audioOnlyFormat = {
+        "mp3",
+        "aac",
+        "flac",
+        "ogg",
+        "opus",
+        "wav",
+        "wma",
+        "ape",
+        "alac",
+        "m4a",
+        "ac3",
+        "eac3",
+        "dts",
+        "amr",
+        "wv",
+        "tta"
+    };
 
 };
 
