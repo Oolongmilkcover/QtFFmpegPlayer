@@ -22,6 +22,7 @@
         <file>workBtnPNG/restoreBtn.png</file>
         <file>workBtnPNG/nextFrameBtn.png</file>
         <file>workBtnPNG/prevFrameBtn.png</file>
+        <file>workBtnPNG/OPlayer.png</file>
     </qresource>
     <qresource prefix="/new/prefix1"/>
 </RCC>

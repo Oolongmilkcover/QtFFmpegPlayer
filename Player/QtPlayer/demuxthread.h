@@ -104,6 +104,7 @@ signals:
     void ableBtn();
     // void moveSlider(long long pts);
     void playNext();
+    void needPause();
 private:
     AVRational m_audioTimebase{};
     AVRational m_videoTimebase{};
@@ -175,6 +176,7 @@ private:
         "tta"
     };
 
+    std::atomic<double> m_speed{1.0};
 };
 
 #endif // DEMUXTHREAD_H

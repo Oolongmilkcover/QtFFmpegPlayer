@@ -566,6 +566,14 @@ void AudioThread::setSpeed(double speed)
     m_desiredSpeed.store(speed);
 }
 
+bool AudioThread::isPlayFinished()
+{
+    // 帧队列空 + 声卡缓冲空 = 真正播完
+    if (m_frameQue && m_frameQue->size() > 0) return false;
+    if (m_auPlayer && m_auPlayer->getNoPlayMs() > 5) return false;  // 留 5ms 容差
+    return true;
+}
+
 
 // 创建滤镜图：abuffer(输入) -> atempo(变速) -> abuffersink(输出)
 bool AudioThread::initAtempoFilter(double speed)

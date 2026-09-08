@@ -40,7 +40,7 @@ public:
     void setPause(bool isPause);
     void setSerial(int serial);
     void stop();
-
+    void resetFrameClock();
     void restart();
 
     std::atomic<bool> playDone = false;
@@ -78,8 +78,8 @@ private:
 
     std::atomic<bool> m_isPlayPrevFrame = false;
 
-    long long m_lastAudioPts = -1;   // 上一次的音频时钟（检测停摆）
-    int m_stallCount = 0;            // 连续停摆次数
+    std::atomic<long long> m_lastFramePts = 0;
+    bool m_firstFrame = false;
 };
 
 #endif // VIDEORENDERTHREAD_H

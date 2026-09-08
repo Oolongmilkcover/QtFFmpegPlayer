@@ -15,6 +15,9 @@ Player::Player(QWidget *parent)
     , ui(new Ui::Player)
 {
     ui->setupUi(this);
+    //设置窗口图标&默认窗口标题
+    this->setWindowIcon(QIcon(":/workBtnPNG/OPlayer.png"));
+    this->setWindowTitle("OPlayer");
     //去掉标题和原生按钮
     this->setWindowFlags(Qt::FramelessWindowHint);
     // 设置VideoWidget大小策略为自动扩展
@@ -60,6 +63,7 @@ Player::Player(QWidget *parent)
     //开始与暂停按钮控制
     connect(ui->ctrlbar, &CtrlBar::play, this,&Player::play);
     connect(ui->ctrlbar, &CtrlBar::pause, this,&Player::pause);
+    connect(&dt,&DemuxThread::needPause,this,&Player::pause);
     connect(ui->ctrlbar, &CtrlBar::setVolume, this,&Player::setVolume);
     connect(this,&Player::setPausePicture,ui->ctrlbar, &CtrlBar::setPausePictrue);
     //停止播放
@@ -291,7 +295,7 @@ void Player::showOrHidePlayList()
 void Player::playFile(const QString &path)
 {
     if (path.isEmpty()||m_stepFrame) return;
-    this->setWindowTitle(path);
+    //this->setWindowTitle(path);
     if (!dt.openFile(path.toUtf8().constData(), ui->video)) {
         QMessageBox::information(0, "error", "open file failed!");
         return;

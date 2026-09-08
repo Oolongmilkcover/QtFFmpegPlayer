@@ -8,6 +8,8 @@
 
 extern "C" {
 #include <libavutil/frame.h>
+
+#include <QElapsedTimer>
 }
 //自动加双引号
 #define GET_STR(x) #x
@@ -20,6 +22,11 @@ extern "C" {
 VideoWidget::VideoWidget(QWidget *parent)
     : QOpenGLWidget(parent)
 {
+    // QSurfaceFormat fmt;
+    // fmt.setSwapInterval(0); // 关闭垂直同步，0=关闭，1=开启vsync
+    // fmt.setDepthBufferSize(24);
+    // this->setFormat(fmt);
+
     QFile file(":/Basic.shader");
 
     if (!file.open(QIODevice::ReadOnly | QIODevice::Text))
@@ -283,6 +290,19 @@ void VideoWidget::initializeGL()
 //刷新显示
 void VideoWidget::paintGL()
 {
+    //=====统计真实屏幕帧率====
+    static QElapsedTimer timer;
+    if(!timer.isValid()) timer.start();
+    m_realDrawCnt ++;
+    qint64 ms = timer.elapsed();
+    if(ms >= 1000)
+    {
+        double realFps = m_realDrawCnt * 1000.0 / ms;
+        qDebug() << "【屏幕真实渲染FPS】" << realFps;
+        timer.restart();
+        m_realDrawCnt = 0;
+    }
+
     mux.lock();
 
     //暂时做法 ，更健壮的做法：增加一个“有效帧”标志 来判断是否要黑屏
@@ -330,6 +350,7 @@ void VideoWidget::paintGL()
 
     mux.unlock();
 }
+
 
 
 // 窗口尺寸变化

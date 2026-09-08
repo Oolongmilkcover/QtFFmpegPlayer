@@ -5,6 +5,7 @@
 #include <QOpenGLShaderProgram>
 #include <mutex>
 #include<string>
+#include <atomic>
 struct AVFrame;
 class VideoWidget : public QOpenGLWidget, protected QOpenGLFunctions
 {
@@ -24,6 +25,9 @@ public:
 
     //滤镜：0原色 1灰度 2反色 3暖色 4冷色
     void setFilterType(int type);
+
+    // 渲染线程叫这个，只存最新帧，不直接上屏
+    //void submitFrame(AVFrame* frame);
 
 protected:
     //刷新显示
@@ -62,5 +66,8 @@ private:
 
     //片元shader
     std::string fragmentString ;
+
+    qint64 m_realDrawCnt = 0;
+    qint64 m_realFpsTimer = 0;
 
 };

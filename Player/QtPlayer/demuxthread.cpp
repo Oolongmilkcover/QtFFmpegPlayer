@@ -118,7 +118,7 @@ bool DemuxThread::openFile(const char* url,VideoWidget* widget)
                 if(m_audioOnlyFormat.contains(m_containerName.toLower()))
                 {
                     m_disableSeekFlag = true;
-                    qDebug()<<"检测到音频文件，关闭seek功能";
+                    qDebug()<<"检测到音频文件";
                 }
             }
         }
@@ -171,8 +171,8 @@ void DemuxThread::start()
 {
     std::lock_guard<std::mutex> lock(m_mutex);
     QThread::start();
-    if (m_videoDecodeThread) m_videoDecodeThread->start();
-    if (m_audioThread) m_audioThread->start();//启动两个子线程
+    if (m_hasVideo && m_videoDecodeThread) m_videoDecodeThread->start();
+    if (m_hasAudio && m_audioThread) m_audioThread->start();//启动两个子线程
 
 }
 
@@ -249,16 +249,43 @@ bool DemuxThread::stepPrevFrame()
 
 bool DemuxThread::seek(double pos)
 {
-    if(m_disableSeekFlag || pos < 0|| pos > 1|| m_isFrameStep) {
+    if(pos < 0|| pos > 1|| m_isFrameStep) {
         return false;
     }
+    m_seekPos = pos;
+    m_serial.fetch_add(1);
+    //纯音频（MP3等）：底层直接 seek
+    if (m_disableSeekFlag) {
+        bool wasPause = m_isPause.load();
+        setPause(true); // 先暂停
+        {
+            std::lock_guard<std::mutex> lock(m_mutex);
+            if (m_fmt_ctx && m_hasAudio) {
+                // 清空音频队列
+                m_audioThread->clear();
+                int64_t seekMs = m_seekPos * totalMs;
+                avformat_flush(m_fmt_ctx);
+                int64_t ts = av_rescale_q(seekMs, {1, 1000}, m_audioTimebase);
+                av_seek_frame(m_fmt_ctx, m_audioStream, ts, AVSEEK_FLAG_BACKWARD);
+                // 解码器 flush，丢弃 seek 前的残留
+                m_audioThread->flushBuf();
+                // 重置重采样器 + atempo 滤镜（丢弃残留）
+                m_audioThread->requestFilterReset();
+                // 同步 serial
+                m_audioThread->setSerial(m_serial.load());
+            }
+        }
+        setPause(wasPause);
+        return true;
+    }
+
+    //其余情况
     m_lastIsPause.store(m_isPause);
     setPause(false);
     QThread::usleep(500);
     emit disableBtn();
     m_seekPos = pos;
     m_isSeeking = true;
-    m_serial.fetch_add(1); //serial++
     return true;
 }
 
@@ -281,6 +308,8 @@ void DemuxThread::close()
     m_audioStream = -1;
     totalMs = 0;
     isCompleteInit = false;
+    m_hasVideo = false;
+    m_hasAudio = false;
     pts = 0;
 }
 
@@ -292,8 +321,8 @@ void DemuxThread::clear()
 
 void DemuxThread::closeAVThread()
 {
-    if (m_videoDecodeThread) m_videoDecodeThread->close();
-    if (m_audioThread) m_audioThread->close();
+    if (m_hasVideo && m_videoDecodeThread) m_videoDecodeThread->close();
+    if (m_hasAudio && m_audioThread) m_audioThread->close();
 }
 
 AVPacket *DemuxThread::readPkt()
@@ -413,31 +442,43 @@ void DemuxThread::run()
             pts.store(m_audioThread->getPts());
             m_videoDecodeThread->setSynpts(pts);
         } else if (m_hasVideo) {
-            // 视频自己做主时钟  具体会变成
+            // 视频自己做主时钟
             pts.store(m_videoDecodeThread->getVideoRenderPts());
-            // 视频渲染线程的 synpts 在没有音频时永远为0会进入到按帧率输出的流程而且会有lastPts这个机制兜底
-            m_videoDecodeThread->setSynpts(0);
         }
         AVPacket *pkt = readPkt();
         if (!pkt)
         {
+            //已经快结束了准备下一集或者重播
             if(m_eof){
                 //有视频时
-                if(m_hasVideo) m_videoDecodeThread->setLastSome(true);
-                if(m_videoDecodeThread->getPlayDone()){
-                    m_videoDecodeThread->setLastSome(false);
-                    m_eof.store(false);
-                    // 直接 seek 到开头 或下一集
-                    if(m_hasPlayList){
-                        emit playNext();
-                    }else{
-                        seek(0.0);
+                if(m_hasVideo && !m_disableSeekFlag){
+                    m_videoDecodeThread->setLastSome(true);
+                    if(m_videoDecodeThread->getPlayDone()){
+                        m_videoDecodeThread->setLastSome(false);
+                        m_eof.store(false);
+                        // 直接 seek 到开头 或下一集
+                        if(m_hasPlayList){
+                            emit playNext();
+                        }else{
+                            seek(0.0);
+                        }
                     }
                 }
                 //只有音频时
-                if(pts+100>=totalMs){
-                    seek(0.0);
-                    m_eof = false;
+                if ((m_hasAudio && !m_hasVideo)|| m_disableSeekFlag) {
+                    if (m_audioThread->isPlayFinished()) {
+                        // 播完了
+                        m_eof.store(false);
+                        // 直接 seek 到开头 或下一集
+                        if(m_hasPlayList){
+                            emit playNext();
+                        }else{
+                            seek(0.0);
+                        }
+                    }else{
+                        msleep(10);
+                        continue;
+                    }
                 }
             }
             msleep(5);
@@ -481,7 +522,8 @@ void DemuxThread::setHasPlayList(bool has)
 }
 
 void DemuxThread::setSpeed(double speed)
-{    
+{
+    m_speed.store(speed);
     if (m_hasAudio && m_audioThread)       m_audioThread->setSpeed(speed);// 音频 atempo
     if (m_hasVideo && m_videoDecodeThread)  m_videoDecodeThread->setSpeed(speed); // 视频帧时长
 }

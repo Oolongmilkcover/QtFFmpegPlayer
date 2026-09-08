@@ -48,6 +48,7 @@ bool VideoDecodeThread::open(VideoWidget *widget, int width, int height,AVStream
         setFps(videoStream);
         m_videoRenderThread->setWidget(m_widget);
         m_videoRenderThread->restart();
+        m_videoRenderThread->resetFrameClock();
     }
     qDebug()<< "video Decode open !";
     qDebug()<< "video Render open !";
@@ -59,6 +60,7 @@ bool VideoDecodeThread::repaintPts(AVPacket *pkt, int64_t seekpts,int serial)
     if (!pkt) return false;
     m_serial = serial;
     m_videoRenderThread->serial = serial;
+    m_videoRenderThread->resetFrameClock();
     std::lock_guard<std::mutex> lock(m_viMutex);
     if (!m_codec_ctx) {
         av_packet_free(&pkt);
