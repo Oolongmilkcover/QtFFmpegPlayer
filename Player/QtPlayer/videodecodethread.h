@@ -69,6 +69,10 @@ public:
 
     void setSpeed(double speed);
 
+    //解码线程读取参数判断是否要seek
+    std::atomic<bool> needSeek = false;
+    std::atomic<long long> needSeekMs = -1;
+
 private:
     std::atomic<bool> m_isPause = false;
     VideoWidget* m_widget;
@@ -76,6 +80,13 @@ private:
     VideoRenderThread *m_videoRenderThread = nullptr;
     AVStream* m_videoStream = nullptr;
     std::mutex m_viMutex;
+
+    //逐上一帧 关键的 提前解码然后next进回放队列
+    void seekAndPushInQue(int64_t pts);
+    void pushAndNextQue(AVFrame* avFrame);
+
+    std::atomic<bool> PlayBacking = false;
+
 };
 
 #endif // VIDEODECODETHREAD_H

@@ -13,6 +13,7 @@ VideoDecodeThread::VideoDecodeThread(int frameSize, bool keep_last )
     m_pktQue = new PacketQueue();
     m_videoRenderThread = new VideoRenderThread(m_frameQue);
 
+    connect(m_frameQue,&FrameQueue::seekToPush,this,&VideoDecodeThread::seekAndPushInQue);
 }
 
 VideoDecodeThread::~VideoDecodeThread()
@@ -89,12 +90,22 @@ bool VideoDecodeThread::repaintPts(AVPacket *pkt, int64_t seekpts,int serial)
         if (frameMs >= seekpts) {
             // 找到目标帧：恢复完整解码模式直接显示
             m_codec_ctx->skip_frame = original_skip;
-            paint(frame);
+            if(!PlayBacking.load()){
+                paint(frame);
+            }else{
+                pushAndNextQue(frame);
+            }
             m_videoRenderThread->pts.store(seekpts);
             //seekpts = frameMs;
             found = true;
+            PlayBacking.store(false);
         } else {
-            av_frame_free(&frame);
+            //如果在回放中就加入队列
+            if(PlayBacking.load()){
+                pushAndNextQue(frame);
+            }else{
+                av_frame_free(&frame);
+            }
         }
     }
 
@@ -269,6 +280,42 @@ bool VideoDecodeThread::getPlayDone()
 void VideoDecodeThread::setSpeed(double speed)
 {
     m_videoRenderThread->setSpeed(speed);
+}
+
+void VideoDecodeThread::seekAndPushInQue(int64_t pts)
+{
+    PlayBacking.store(true);
+
+    needSeek.store(true);
+    needSeekMs.store(pts);
+}
+
+void VideoDecodeThread::pushAndNextQue(AVFrame *avFrame)
+{
+    if(!avFrame){
+        return;
+    }
+    int64_t raw = avFrame->best_effort_timestamp;
+    if (raw == AV_NOPTS_VALUE) raw = avFrame->pts;
+    if (raw == AV_NOPTS_VALUE) raw = 0;
+    int64_t tmpPts = av_rescale_q(raw, m_videoStream->time_base, {1, 1000});
+    //获取帧队列的可写帧
+    Frame* frame = m_frameQue->getWritable();
+    if (!frame) {
+        av_frame_free(&avFrame);
+        return;
+    }
+    av_frame_unref(frame->m_frame);
+    //将本pkt的serial写入frame
+    frame->m_serial = m_serial;
+    //转移avFrame的buffer
+    av_frame_move_ref(frame->m_frame,avFrame);
+    av_frame_free(&avFrame);
+    frame->m_frame->pts = tmpPts;
+
+    m_frameQue->push();
+
+    m_frameQue->next();
 }
 
 void VideoDecodeThread::setSynpts(long long synpts)

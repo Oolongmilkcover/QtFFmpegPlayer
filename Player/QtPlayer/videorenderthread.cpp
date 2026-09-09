@@ -143,22 +143,20 @@ void VideoRenderThread::run()
             //逐帧逻辑
             int cmd = m_FrameStepMode.exchange(0);
             if(cmd==1){
-                //Frame* frame = m_frameQueue->getNextFrame();
-                Frame* frame = m_frameQueue->getReadable();
-                if (frame && frame->m_serial == serial) {
+                Frame* frame = m_frameQueue->getNextFrame();
+                if (frame && frame->m_frame) {
                     pts.store(frame->m_frame->pts);
                     renderFrame(frame);
-                    if(!m_isPlayPrevFrame){
-                        m_frameQueue->next();
-                        m_frameQueue->next();
+                    //可删否
+                    if(frame->m_serial == -1){
+                        free(frame);
+                        frame = nullptr;
                     }
-                    m_isPlayPrevFrame.store(false);
                 }
-            }else if(cmd == 2&&!m_isPlayPrevFrame){
+            }else if(cmd == 2){
                 Frame* frame = m_frameQueue->getPrevFrame();
-                if (frame) {
+                if (frame && frame->m_frame) {
                     renderFrame(frame);
-                    m_isPlayPrevFrame.store(true);
                 }
             }
             msleep(5);
@@ -173,7 +171,7 @@ void VideoRenderThread::run()
         //从FrameQueue获取Frame
 
         Frame* frame = m_frameQueue->getReadable();
-        if (!frame)
+        if (!frame || !frame->m_frame )
         {
             if (m_isExit || m_frameQueue->isAborted())
             {

@@ -414,7 +414,7 @@ void AudioThread::playRun()
             continue;
         }
         Frame *frame = m_frameQue->getReadable();
-        if (!frame)
+        if (!frame || !frame->m_frame)
         {
             if (m_isExit)
                 break;

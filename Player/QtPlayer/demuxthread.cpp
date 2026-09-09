@@ -11,7 +11,6 @@ extern "C" {
 DemuxThread::DemuxThread(QObject *parent)
     : QThread{parent}
 {
-
     //1.网络流初始化
     avformat_network_init();
     //设置rtsp流以tcp协议打开
@@ -42,7 +41,6 @@ DemuxThread::~DemuxThread()
         m_option = nullptr;
     }
 
-    //20260722
     avformat_close_input(&m_fmt_ctx);
 }
 
@@ -367,7 +365,21 @@ long long DemuxThread::getVideoPts()
 void DemuxThread::run()
 {
     while(!m_isExit){
-        // ===== 1. 先处理 seek  =====
+        //首要处理seek，在无限逐帧时这里引进了判断视频解码线程是否需要seek的判断
+        if(m_hasVideo&&m_videoDecodeThread&&m_videoDecodeThread->needSeek.load()){
+            qDebug()<<"1";
+            // m_videoDecodeThread->needSeek.store(false);
+            // double pos = (double)m_videoDecodeThread->needSeekMs.load() / totalMs;
+            // //下面是seek()的代码
+            // m_seekPos = pos;
+            // m_serial.fetch_add(1);
+            // m_lastIsPause.store(m_isPause);
+            // //setPause(false);
+            // //QThread::usleep(500);
+            // m_seekPos = pos;
+            // m_isSeeking = true;
+        }
+        // 处理 seek
         if (m_isSeeking)
         {
             m_isSeeking = false;
@@ -502,6 +514,12 @@ void DemuxThread::run()
 void DemuxThread::setDone()
 {
     playDone.store(true);
+}
+
+void DemuxThread::videoCallSeek(int64_t ms)
+{
+    double pos = double(ms)/totalMs;
+    seek(pos);
 }
 
 bool DemuxThread::getIsExit() const

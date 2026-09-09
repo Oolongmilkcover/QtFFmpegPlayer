@@ -99,6 +99,7 @@ public:
 private slots:
     void setDone();
 
+    void videoCallSeek(long long ms);
 signals:
     void disableBtn();
     void ableBtn();

@@ -1,6 +1,7 @@
 #ifndef FRAMEQUEUE_H
 #define FRAMEQUEUE_H
 
+#include <QObject>
 #include <array>
 #include <mutex>
 extern "C"
@@ -11,7 +12,7 @@ extern "C"
 struct Frame{
     AVFrame* m_frame = nullptr;
     int m_serial = 0;
-    Frame(AVFrame* frame = nullptr , int serial = 0)
+    Frame(AVFrame* frame = nullptr , int serial = -1)
         :m_frame(frame)
         ,m_serial(serial){
 
@@ -43,14 +44,14 @@ struct Frame{
 
 };
 
-
-class FrameQueue
+class FrameQueue  : public QObject
 {
+    Q_OBJECT
 private:
     // FrameQueue最多保存16帧
     static constexpr int MAX_QUEUE_SIZE = 16;
 
-    // 环形数组
+    //环形数组->未来队列
     std::array<Frame, MAX_QUEUE_SIZE> m_queue;
 
     // 读位置
@@ -65,23 +66,13 @@ private:
     // 实际使用的最大容量
     int m_maxSize = MAX_QUEUE_SIZE;
 
-    // 是否保留当前显示的上一帧
+    //这个变量判断是否创建历史帧队列
     bool m_keep_last = true;
-
-    // 0：当前帧还没有被显示
-    // 1：当前帧已经被显示
-    int m_rindex_shown = 0;
 
     // 是否中止
     bool m_abort = false;
 
 
-    //上一帧
-    //int prevFrame = -1;
-    //逐帧用这一帧  只能往上读取一帧
-    int m_curFrame = -1;
-    //下一帧
-    //int nextFrame = -1;
     std::mutex m_mutex;
     std::condition_variable m_cond;
 
@@ -107,11 +98,11 @@ public:
     // 消费当前Frame
     void next();
 
-    // 获取下一帧
+    // 获取下一帧 调用者无需next
     Frame* getNextFrame();
 
     // 获取上一帧
-    Frame* getPrevFrame();  
+    Frame* getPrevFrame();
 
     // 中止等待
     void abort();
@@ -127,6 +118,37 @@ public:
 
     // 当前是否中止
     bool isAborted();
+
+
+signals:
+    void seekToPush(int64_t pts);
+
+
+private:
+    // FrameQueue最多保存16帧
+    static constexpr int MAX_PLAYBACKQUEUE_SIZE = 40;
+    //环形数组->回放队列->模拟栈的先进后出
+    std::array<Frame, MAX_PLAYBACKQUEUE_SIZE> m_playBackQueue;
+    //回放帧队列大小
+    int m_PBQMaxSize = MAX_PLAYBACKQUEUE_SIZE;
+    //回放帧队列元素个数
+    int m_PBQSize = 0;
+    //栈底索引 负责判断倒退是否到底了
+    int m_bottomIndex = -1;
+    //栈顶索引  与m_curIndex一同判断是在历史帧内便利还是逐帧渲染新的帧
+    int m_topIndex = -1;
+    int m_curIndex = -1;
+
+    std::mutex m_PBQ_mutex;
+
+    //将这个帧移动到回放队列
+    void moveToPBQ(Frame* frame);
+
+    std::atomic<bool> m_switchNextMode = true;
+    std::atomic<bool> m_PrevToNext = false;
+    std::atomic<bool> m_NextToPrev = false;
 };
+
+
 
 #endif // FRAMEQUEUE_H
