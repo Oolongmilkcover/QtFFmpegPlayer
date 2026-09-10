@@ -6,6 +6,7 @@ extern "C"
 }
 #include <QDebug>
 #include <QMetaObject>
+#include <QPointer>
 
 #define SPIN_THRESHOLD_MS 2
 #define SYNC_THRESHOLD 30
@@ -91,6 +92,16 @@ void VideoRenderThread::restart()
     if (!isRunning()) start();
 }
 
+void VideoRenderThread::requestStep(int delta)
+{
+    m_stepReq.fetch_add(delta);
+}
+
+void VideoRenderThread::clearStepRequests()
+{
+    m_stepReq.store(0);
+}
+
 
 void VideoRenderThread::renderFrame(Frame* frame)
 {
@@ -99,7 +110,7 @@ void VideoRenderThread::renderFrame(Frame* frame)
         return;
     }
 
-    //提前复制一份，防止setpaint前就因为next()导致数据失效
+    //提前复制一份（clone 只是引用计数+1），防止 setPaint 前数据失效
     AVFrame* renderFrame = av_frame_clone(frame->m_frame);
 
     if (!renderFrame)
@@ -107,11 +118,36 @@ void VideoRenderThread::renderFrame(Frame* frame)
         return;
     }
 
+    /*
+     * 上屏"最新帧优先"：
+     * GUI 线程还没消化上一帧时，这一帧直接丢掉。
+     * 否则每帧都会往事件队列里塞一个带着整帧 buffer 的 lambda，
+     * GUI 线程一忙（拖动窗口/模态对话框/重绘）就会越堆越多：
+     * 内存膨胀，而且松手之后还要把积压的陈旧帧挨个补播一遍。
+     */
+    if (!m_widget->beginPaint())
+    {
+        av_frame_free(&renderFrame);
+        return;
+    }
+
+    //widget 可能先于这条投递被销毁，用 QPointer 保护，别解引用野指针
+    QPointer<VideoWidget> widgetGuard(m_widget);
+
     QMetaObject::invokeMethod(
         m_widget,
-        [widget = m_widget, renderFrame]()
+        [widgetGuard, renderFrame]() mutable
         {
-            widget->setPaint(renderFrame);
+            if (widgetGuard)
+            {
+                //先清"在飞"标志：setPaint 内部有多个提前返回分支
+                widgetGuard->endPaint();
+                widgetGuard->setPaint(renderFrame);
+            }
+            else
+            {
+                av_frame_free(&renderFrame);
+            }
         },
         Qt::QueuedConnection
         );
@@ -137,27 +173,65 @@ void VideoRenderThread::run()
 
     while (!m_isExit)
     {
-        //是否暂停
+        //是否暂停（逐帧也走这里：暂停渲染，但解码线程继续解码）
         if (m_isPause)
         {
-            //逐帧逻辑
-            int cmd = m_FrameStepMode.exchange(0);
-            if(cmd==1){
-                Frame* frame = m_frameQueue->getNextFrame();
-                if (frame && frame->m_frame) {
-                    pts.store(frame->m_frame->pts);
-                    renderFrame(frame);
-                    //可删否
-                    if(frame->m_serial == -1){
-                        free(frame);
-                        frame = nullptr;
+            int req = m_stepReq.load();
+            if (req > 0)
+            {
+                //下一帧
+                Frame* frame = m_frameQueue->stepForward();
+                if (frame)
+                {
+                    //成功取到帧才消费掉一次请求
+                    m_stepReq.fetch_sub(1);
+                    if (frame->m_frame)
+                    {
+                        pts.store(frame->m_frame->pts);
+                        m_lastFramePts.store(frame->m_frame->pts);
+                        renderFrame(frame);
+                        //恢复播放时第一帧不要等待
+                        m_firstFrame = true;
                     }
+                    delete frame;
+                    msleep(1);
                 }
-            }else if(cmd == 2){
-                Frame* frame = m_frameQueue->getPrevFrame();
-                if (frame && frame->m_frame) {
-                    renderFrame(frame);
+                else
+                {
+                    //解码还没跟上：请求留着，稍后重试
+                    msleep(5);
                 }
+                continue;
+            }
+            else if (req < 0)
+            {
+                //上一帧
+                FrameQueue::StepStatus st = FrameQueue::StepEmpty;
+                Frame* frame = m_frameQueue->stepBackward(&st);
+                if (frame)
+                {
+                    m_stepReq.fetch_add(1);
+                    if (frame->m_frame)
+                    {
+                        pts.store(frame->m_frame->pts);
+                        m_lastFramePts.store(frame->m_frame->pts);
+                        renderFrame(frame);
+                        m_firstFrame = true;
+                    }
+                    delete frame;
+                    msleep(1);
+                }
+                else
+                {
+                    if (st == FrameQueue::StepAtBegin)
+                    {
+                        //已经在文件第一帧，这次请求直接作废
+                        m_stepReq.fetch_add(1);
+                    }
+                    //StepNeedRefill / StepEmpty：回填或解码还没跟上，保留请求下一轮再试
+                    msleep(5);
+                }
+                continue;
             }
             msleep(5);
             continue;
@@ -300,4 +374,3 @@ void VideoRenderThread::setSpeed(double speed)
     m_speed.store(speed);
     m_frameDurationMs = 1000.0 / m_fps / speed;
 }
-

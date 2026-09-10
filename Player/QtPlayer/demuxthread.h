@@ -40,10 +40,14 @@ public:
     bool stepNextFrame();
     //回放上一帧
     bool stepPrevFrame();
+    //是否处于逐帧状态
+    bool isFrameStep() const { return m_isFrameStep.load(); }
 
 
-    //跳转
+    //跳转（pos = 0.0~1.0）
     bool seek(double pos);
+    //按毫秒跳转：逐帧对齐用，避免 pos<->ms 来回换算把目标挪到下一帧
+    bool seekToMs(long long ms);
 
     //关闭线程清理资源
     void close();
@@ -70,8 +74,6 @@ public:
     //宽高
     int m_width = 0;
     int m_height = 0;
-
-    double m_saveVolume = 0;
 
     bool getIsExit() const;
 
@@ -110,10 +112,18 @@ private:
     AVRational m_audioTimebase{};
     AVRational m_videoTimebase{};
 
+    //普通seek流程，由run()调用
+    void doSeek();
+    //发起一次以毫秒为目标的seek（seek / seekToMs / 逐帧对齐都走这里）
+    bool requestSeekMs(long long ms);
+    //逐帧回退到历史最旧帧后，向后解码一段补进历史
+    void doBackwardRefill();
+
+    // 上一次没推进包队列的包（队列满），下次循环重试
+    AVPacket* m_pendingPkt = nullptr;
+
     //是否暂停
     std::atomic<bool> m_isPause = false;
-    //上次暂停状态
-    std::atomic<bool> m_lastIsPause = false;
     //是否退出
     std::atomic<bool>  m_isExit = false;
     //解封装上下文
@@ -140,7 +150,8 @@ private:
 
     //异步seek
     std::atomic<bool> m_isSeeking = false;
-    std::atomic<double> m_seekPos = 0;
+    //seek目标（毫秒）
+    std::atomic<long long> m_seekMs = 0;
 
     std::atomic<bool> m_eof = false;
 
@@ -152,6 +163,10 @@ private:
 
     //是否在逐帧
     std::atomic<bool> m_isFrameStep = false;
+    //进入逐帧之前的暂停状态（退出逐帧时恢复）
+    std::atomic<bool> m_pauseBeforeStep = false;
+    //正在处理的 seek 结束后应该恢复成什么暂停状态
+    std::atomic<bool> m_pauseAfterSeek = false;
 
     // 实际解析出来的封装名
     QString m_containerName;

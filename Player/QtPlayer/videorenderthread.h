@@ -21,6 +21,8 @@ public:
     void setWidget(VideoWidget* widget);
     //设置视频帧率
     void setFps(double fps);
+    //取视频帧率
+    double getFps() const { return m_fps; }
 
     // 设置倍速
     void setSpeed(double speed);
@@ -45,8 +47,9 @@ public:
 
     std::atomic<bool> playDone = false;
 
-    //0无 1下一帧  2上一帧
-    std::atomic<int> m_FrameStepMode = 0;
+    //逐帧请求：>0 表示还有多少次“下一帧”，<0 表示还有多少次“上一帧”
+    void requestStep(int delta);
+    void clearStepRequests();
 
 protected:
 
@@ -76,7 +79,8 @@ private:
 
     std::atomic<bool> m_isExit = false;
 
-    std::atomic<bool> m_isPlayPrevFrame = false;
+    //待执行的逐帧请求次数
+    std::atomic<int> m_stepReq{0};
 
     std::atomic<long long> m_lastFramePts = 0;
     bool m_firstFrame = false;

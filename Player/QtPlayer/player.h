@@ -52,6 +52,9 @@ private:
 
     void addToPlayList(const QString &path);
 
+    //退出逐帧模式（恢复按钮状态，让dt把播放位置对齐）
+    void exitStepFrame();
+
 signals:
     void setPausePicture(bool isPause);
 

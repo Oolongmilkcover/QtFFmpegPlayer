@@ -3,10 +3,14 @@
 
 #include <QObject>
 #include <array>
+#include <deque>
+#include <functional>
 #include <mutex>
+#include <condition_variable>
 extern "C"
 {
 #include <libavformat/avformat.h>
+#include <libavutil/frame.h>
 }
 
 struct Frame{
@@ -44,13 +48,123 @@ struct Frame{
 
 };
 
+/*
+ * FrameQueue 里有两个队列：
+ *
+ * 1. 未来队列 m_queue（环形数组）：解码线程写入、渲染线程消费，
+ *    保存“已经解码、还没轮到显示”的帧。
+ *
+ * 2. 历史队列 m_history（双端队列）：已经显示（被 next() 消费）过的帧，
+ *    按时间升序排列，front 最旧、back 最新，m_cursor 指向当前屏幕上的那一帧。
+ *    逐帧回退就是让 m_cursor 往前走；走到头（front）就通过 onNeedRefill
+ *    请求 demux 线程向后 seek 一小段并回填一批更早的帧。
+ */
 class FrameQueue  : public QObject
 {
     Q_OBJECT
-private:
-    // FrameQueue最多保存16帧
-    static constexpr int MAX_QUEUE_SIZE = 16;
+public:
+    //逐帧结果
+    enum StepStatus{
+        StepOk = 0,      //成功
+        StepEmpty,       //暂时没有帧（解码还没跟上），稍后重试
+        StepNeedRefill,  //已到历史最旧处，正在回填，稍后重试
+        StepAtBegin      //已经到文件开头，无法再后退
+    };
 
+    // 未来队列最大容量
+    static constexpr int MAX_QUEUE_SIZE = 16;
+    // 历史队列最大容量（逐帧最多能连续回退这么多帧，之后靠回填续上）
+    // 注意：回填是往“更早”的方向插帧，历史满了只能牺牲离光标最远的“最新”帧，
+    //       所以这个值要明显大于一次回填的帧数
+    static constexpr int MAX_HISTORY_SIZE = 48;
+
+    //帧队列本质是一个环形数组，以O(1)的时间复杂度来快速访问元素
+    //keep_last = true 时会额外维护历史队列，用于逐帧回退
+    FrameQueue(int max_size = MAX_QUEUE_SIZE, bool keep_last = true);
+
+    ~FrameQueue();
+
+    // 禁止拷贝
+    FrameQueue(const FrameQueue&) = delete;
+    FrameQueue& operator=(const FrameQueue&) = delete;
+
+    // 获取一个可以写入的Frame
+    Frame* getWritable();
+
+    // 写入完成，推进write index
+    void push();
+
+    // 获取当前可以读取的Frame
+    Frame* getReadable();
+
+    // 消费当前Frame（该帧进入历史队列）
+    void next();
+
+    // 中止等待
+    void abort();
+
+    // 恢复队列
+    void reset();
+
+    // 清空未来队列 + 历史队列
+    void clear();
+
+    // 只清未来队列（保留历史，逐帧回填 seek 时用）
+    void clearFuture();
+
+    // 当前未来队列Frame数量
+    int size();
+
+    // 当前是否中止
+    bool isAborted() const;
+
+    // ========================= 逐帧 =========================
+
+    // 前进一帧：优先取历史里已经解码但还没显示到的帧，其次消费未来队列
+    // 返回堆上的副本，调用者负责 delete；返回 nullptr 表示暂时取不到（稍后重试）
+    Frame* stepForward();
+
+    // 后退一帧：返回堆上的副本，调用者负责 delete
+    // *status 说明结果：StepOk 成功 / StepEmpty 无历史 /
+    //                   StepNeedRefill 已发起回填 / StepAtBegin 已到开头
+    Frame* stepBackward(StepStatus* status = nullptr);
+
+    // 回填历史：frames 为 pts 升序、且都早于当前历史最旧帧的帧
+    // 内部接管 frames 里的 AVFrame 所有权，只保留最靠近边界的一批
+    void prependHistory(std::deque<AVFrame*>& frames, int serial);
+
+    // 回填结束（gotFrames=false 表示已到文件开头，之后不再请求回填）
+    void finishRefill(bool gotFrames);
+
+    // 放弃等待中的回填（退出逐帧时调用）
+    void clearRefillPending();
+
+    // 是否正在等待回填
+    bool refillPending();
+
+    // 历史最旧帧的 pts（无历史返回 -1）
+    long long historyOldestPts();
+
+    // 当前光标所在帧的 pts（-1 表示未知）
+    long long currentPts();
+
+    // 光标是否停在最新一帧（没有回退过）
+    bool cursorAtNewest();
+
+    // 历史队列当前帧数
+    int historySize();
+
+    // 历史耗尽时的回调，在调用 stepBackward 的线程里执行
+    std::function<void(long long pts)> onNeedRefill;
+
+private:
+    // 把消费掉的帧放进历史（需要在持锁状态下调用，会 move 走 src 的帧数据）
+    void appendHistoryLocked(Frame& src, int serial);
+
+    // 光标是否有效
+    bool cursorValidLocked() const;
+
+private:
     //环形数组->未来队列
     std::array<Frame, MAX_QUEUE_SIZE> m_queue;
 
@@ -72,81 +186,20 @@ private:
     // 是否中止
     bool m_abort = false;
 
+    //环形数组->历史队列（front 最旧，back 最新）
+    std::deque<Frame> m_history;
 
-    std::mutex m_mutex;
+    // 当前显示帧在历史队列中的下标
+    int m_cursor = -1;
+
+    // 是否正在等待回填
+    bool m_refillPending = false;
+
+    // 是否已经确定退到文件开头了
+    bool m_atBegin = false;
+
+    mutable std::mutex m_mutex;
     std::condition_variable m_cond;
-
-public:
-    //帧队列本质是一个环形数组，以O(1)的时间复杂度来快速访问元素,最小数组大小为16，保留上一帧
-    FrameQueue(int max_size = 16, bool keep_last = true);
-
-    ~FrameQueue();
-
-    // 禁止拷贝
-    FrameQueue(const FrameQueue&) = delete;
-    FrameQueue& operator=(const FrameQueue&) = delete;
-
-    // 获取一个可以写入的Frame
-    Frame* getWritable();
-
-    // 写入完成，推进write index
-    void push();
-
-    // 获取当前可以读取的Frame
-    Frame* getReadable();
-
-    // 消费当前Frame
-    void next();
-
-    // 获取下一帧 调用者无需next
-    Frame* getNextFrame();
-
-    // 获取上一帧
-    Frame* getPrevFrame();
-
-    // 中止等待
-    void abort();
-
-    // 恢复队列
-    void reset();
-
-    // 清空队列
-    void clear();
-
-    // 当前Frame数量
-    int size();
-
-    // 当前是否中止
-    bool isAborted();
-
-
-signals:
-    void seekToPush(int64_t pts);
-
-
-private:
-    // FrameQueue最多保存16帧
-    static constexpr int MAX_PLAYBACKQUEUE_SIZE = 40;
-    //环形数组->回放队列->模拟栈的先进后出
-    std::array<Frame, MAX_PLAYBACKQUEUE_SIZE> m_playBackQueue;
-    //回放帧队列大小
-    int m_PBQMaxSize = MAX_PLAYBACKQUEUE_SIZE;
-    //回放帧队列元素个数
-    int m_PBQSize = 0;
-    //栈底索引 负责判断倒退是否到底了
-    int m_bottomIndex = -1;
-    //栈顶索引  与m_curIndex一同判断是在历史帧内便利还是逐帧渲染新的帧
-    int m_topIndex = -1;
-    int m_curIndex = -1;
-
-    std::mutex m_PBQ_mutex;
-
-    //将这个帧移动到回放队列
-    void moveToPBQ(Frame* frame);
-
-    std::atomic<bool> m_switchNextMode = true;
-    std::atomic<bool> m_PrevToNext = false;
-    std::atomic<bool> m_NextToPrev = false;
 };
 
 

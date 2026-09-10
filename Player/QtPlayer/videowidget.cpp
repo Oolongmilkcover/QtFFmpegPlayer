@@ -5,27 +5,22 @@
 #include<sstream>
 #include<iostream>
 #include<QFile>
-
+#include <QElapsedTimer>
 extern "C" {
 #include <libavutil/frame.h>
-
-#include <QElapsedTimer>
 }
 //自动加双引号
 #define GET_STR(x) #x
 #define A_VER 3
 #define T_VER 4
 
-
-//准备yuv数据
-// ffmpeg -i v1080.mp4 -t 10 -s 240x128 -pix_fmt yuv420p  out240x128.yuv
 VideoWidget::VideoWidget(QWidget *parent)
     : QOpenGLWidget(parent)
 {
-    // QSurfaceFormat fmt;
-    // fmt.setSwapInterval(0); // 关闭垂直同步，0=关闭，1=开启vsync
-    // fmt.setDepthBufferSize(24);
-    // this->setFormat(fmt);
+    //关闭垂直同步
+    QSurfaceFormat fmt = format();
+    fmt.setSwapInterval(0);
+    setFormat(fmt);
 
     QFile file(":/Basic.shader");
 
@@ -84,9 +79,12 @@ VideoWidget::VideoWidget(QWidget *parent)
 
 VideoWidget::~VideoWidget()
 {
-    delete[] datas[0];
-    delete[] datas[1];
-    delete[] datas[2];
+    mux.lock();
+    if (m_frame) {
+        av_frame_free(&m_frame);
+        m_frame = nullptr;
+    }
+    mux.unlock();
 
     makeCurrent();
 
@@ -98,14 +96,13 @@ VideoWidget::~VideoWidget()
 void VideoWidget::clearScreen()
 {
     mux.lock();
-    delete[] datas[0];
-    delete[] datas[1];
-    delete[] datas[2];
-    datas[0] = nullptr;
-    datas[1] = nullptr;
-    datas[2] = nullptr;
+    //清掉缓存的那一帧 → paintGL 走"没帧"分支画黑
+    if (m_frame) {
+        av_frame_free(&m_frame);
+        m_frame = nullptr;
+    }
     mux.unlock();
-    update();    // 触发 paintGL，进入 !datas[0] 分支 → 画黑
+    update();    // 触发 paintGL，进入 !m_frame 分支 → 画黑
 }
 
 void VideoWidget::setFilterType(int type)
@@ -117,59 +114,53 @@ void VideoWidget::setFilterType(int type)
 
 
 
+//"上屏最新帧优先"：渲染线程调用，拿到 true 才有资格投递这一帧
+bool VideoWidget::beginPaint()
+{
+    bool expected = false;
+    return m_paintInFlight.compare_exchange_strong(expected, true);
+}
+
+void VideoWidget::endPaint()
+{
+    m_paintInFlight.store(false);
+}
+
+/*
+ * 只"接管"这一帧的引用，不做任何拷贝：
+ * 像素数据留在 AVFrame 里，paintGL() 直接从 frame->data[] 上传纹理。
+ * 上一帧的引用在这里才还回去（所以 paintGL 期间数据一定有效）。
+ */
 void VideoWidget::setPaint(AVFrame *frame)
 {
+    if (!frame) return;
 
-    if (!frame)return;
     mux.lock();
     //容错，保证尺寸正确
-    if (!datas[0] || width*height == 0 || frame->width != this->width || frame->height != this->height)
+    if (width*height == 0 || frame->width != this->width
+        || frame->height != this->height || !frame->data[0])
     {
-        av_frame_free(&frame);
         mux.unlock();
+        av_frame_free(&frame);
         return;
     }
-    if (width == frame->linesize[0]) //无需对齐
-    {
-        memcpy(datas[0], frame->data[0], width*height);
-        memcpy(datas[1], frame->data[1], width*height / 4);
-        memcpy(datas[2], frame->data[2], width*height / 4);
-    }
-    else//行对齐问题
-    {
-        for(int i = 0; i < height; i++) //Y
-            memcpy(datas[0] + width*i, frame->data[0] + frame->linesize[0]*i, width);
-        for (int i = 0; i < height/2; i++) //U
-            memcpy(datas[1] + width/2*i, frame->data[1] + frame->linesize[1] * i, width/2);
-        for (int i = 0; i < height/2; i++) //V
-            memcpy(datas[2] + width/2*i, frame->data[2] + frame->linesize[2] * i, width/2);
-
-    }
-
+    if (m_frame) av_frame_free(&m_frame);   // 上一帧用完了
+    m_frame = frame;                        // 零拷贝：只换指针
     mux.unlock();
-    av_frame_free(&frame);
-    //qDebug() << "刷新显示" << endl;
+
     //刷新显示
     update();
 }
 void VideoWidget::Init(int width, int height)
 {
     mux.lock();
+    //尺寸可能会变，旧尺寸的帧直接丢掉
+    if (m_frame) {
+        av_frame_free(&m_frame);
+        m_frame = nullptr;
+    }
     this->width = width;
     this->height = height;
-
-    delete[] datas[0];
-    delete[] datas[1];
-    delete[] datas[2];
-
-    datas[0] = nullptr;
-    datas[1] = nullptr;
-    datas[2] = nullptr;
-
-    ///分配材质内存空间
-    datas[0] = new unsigned char[width*height];		//Y
-    datas[1] = new unsigned char[width*height / 4];	//U
-    datas[2] = new unsigned char[width*height / 4];	//V
 
     makeCurrent();
     if (texs[0])
@@ -305,9 +296,8 @@ void VideoWidget::paintGL()
 
     mux.lock();
 
-    //暂时做法 ，更健壮的做法：增加一个“有效帧”标志 来判断是否要黑屏
-    // 检查是否有有效纹理数据（例如 datas[0] 是否已分配）
-    if (!datas[0] || width == 0 || height == 0) {
+    // 没有有效帧（还没 Init / 已 clearScreen / 尺寸不匹配）→ 画黑
+    if (!m_frame || !m_frame->data[0] || width == 0 || height == 0) {
         mux.unlock();
         // 清屏为黑色
         glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
@@ -320,28 +310,39 @@ void VideoWidget::paintGL()
     //设置滤镜类型
     glUniform1i(m_filterLoc, m_filterType.load());
 
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, texs[0]); //0层绑定到Y材质
-    //修改材质内容(复制内存内容)
-    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width, height, GL_RED, GL_UNSIGNED_BYTE, datas[0]);
-    //与shader uni遍历关联
-    glUniform1i(unis[0], 0);
+    /*
+     * 直接从 AVFrame 的平面内存上传纹理（Y/U/V），
+     * 不再经过 datas[] 中间缓冲 —— GUI 线程每帧少一次 3MB memcpy。
+     * 注意：m_frame 在整个 paintGL 期间被 mux 保护着，数据一定有效。
+     */
+    AVFrame* f = m_frame;
+    for (int p = 0; p < 3; ++p)
+    {
+        const int pw = (p == 0) ? width : width / 2;
+        const int ph = (p == 0) ? height : height / 2;
 
+        glActiveTexture(GL_TEXTURE0 + p);
+        glBindTexture(GL_TEXTURE_2D, texs[p]); //第p层绑定到Y/U/V材质
 
-    glActiveTexture(GL_TEXTURE0 + 1);
-    glBindTexture(GL_TEXTURE_2D, texs[1]); //1层绑定到U材质
-    //修改材质内容(复制内存内容)
-    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width / 2, height / 2, GL_RED, GL_UNSIGNED_BYTE, datas[1]);
-    //与shader uni遍历关联
-    glUniform1i(unis[1], 1);
-
-
-    glActiveTexture(GL_TEXTURE0 + 2);
-    glBindTexture(GL_TEXTURE_2D, texs[2]); //2层绑定到V材质
-    //修改材质内容(复制内存内容)
-    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width / 2, height / 2, GL_RED, GL_UNSIGNED_BYTE, datas[2]);
-    //与shader uni遍历关联
-    glUniform1i(unis[2], 2);
+        if (f->linesize[p] == pw)
+        {
+            //行宽正好等于平面宽度：一次上传（常见分辨率都是这种情况）
+            glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, pw, ph,
+                            GL_RED, GL_UNSIGNED_BYTE, f->data[p]);
+        }
+        else
+        {
+            //有行对齐padding：逐行上传，源依然是解码器内存，没有中间拷贝
+            for (int i = 0; i < ph; ++i)
+            {
+                glTexSubImage2D(GL_TEXTURE_2D, 0, 0, i, pw, 1,
+                                GL_RED, GL_UNSIGNED_BYTE,
+                                f->data[p] + (size_t)f->linesize[p] * i);
+            }
+        }
+        //与shader uni遍历关联
+        glUniform1i(unis[p], p);
+    }
 
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     // qDebug() << "paintGL";

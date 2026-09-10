@@ -247,6 +247,7 @@ void Player::toggleFullScreen()
 void Player::stopToPlay()
 {
     if(!m_isInit) return;
+    exitStepFrame();
     setPausePicture(true);
     dt.close();
     ui->video->clearScreen();
@@ -255,6 +256,7 @@ void Player::stopToPlay()
     m_videoSrcH = 0;
     m_videoSrcW = 0;
     m_isInit = false;
+    ui->video->clearScreen();
 }
 
 
@@ -294,7 +296,9 @@ void Player::showOrHidePlayList()
 
 void Player::playFile(const QString &path)
 {
-    if (path.isEmpty()||m_stepFrame) return;
+    if (path.isEmpty()) return;
+    //换文件前先退出逐帧
+    exitStepFrame();
     //this->setWindowTitle(path);
     if (!dt.openFile(path.toUtf8().constData(), ui->video)) {
         QMessageBox::information(0, "error", "open file failed!");
@@ -360,6 +364,8 @@ void Player::ffSeekFiveSec()
     if(!m_isInit){
         return;
     }
+    //逐帧中快进：先退出逐帧
+    exitStepFrame();
     long long totalMs = dt.totalMs;
     long long seekPtsMs =  (dt.getVideoPts()+5000) > totalMs ? totalMs : (dt.getVideoPts()+5000);
     double pos = (double)seekPtsMs / totalMs;
@@ -371,6 +377,8 @@ void Player::rewindSeekFiveSec()
     if(!m_isInit){
         return;
     }
+    //逐帧中快退：先退出逐帧
+    exitStepFrame();
     long long totalMs = dt.totalMs;
     long long seekPtsMs =  (dt.getVideoPts()- 5000) < 0 ? 0 : (dt.getVideoPts()- 5000);
     double pos = (double)seekPtsMs / totalMs ;
@@ -382,25 +390,35 @@ void Player::rewindSeekFiveSec()
 void Player::stepFrame(int mode)
 {
     if(!m_isInit) return;
-    m_isPause = true;
-    ui->ctrlbar->setPausePictrue(true);
-    //按钮设置不可用
-    ui->ctrlbar->stepFrameTime(true);
-    ui->topMenu->stepFrameTime(true);
+    //上一帧 / 下一帧：进入逐帧模式（暂停渲染，解码继续）
     bool success = false;
     if(mode == 1){
-        m_stepFrame = true;
         success = dt.stepNextFrame();
     }else{
-        m_stepFrame = true;
         success = dt.stepPrevFrame();
     }
     if(!success){
-        m_isPause = false;
-        ui->ctrlbar->setPausePictrue(false);
-        ui->ctrlbar->stepFrameTime(false);
-        ui->topMenu->stepFrameTime(false);
+        //不支持逐帧（没有视频流 / 纯音频文件）时保持原状
+        return;
     }
+    if(!m_stepFrame){
+        m_stepFrame = true;
+        m_isPause = true;
+        //按钮切换到暂停外观，并锁掉逐帧期间不该用的按钮
+        ui->ctrlbar->setPausePictrue(true);
+        ui->ctrlbar->stepFrameTime(true);
+        ui->topMenu->stepFrameTime(true);
+    }
+}
+
+void Player::exitStepFrame()
+{
+    if(!m_stepFrame) return;
+    m_stepFrame = false;
+    ui->ctrlbar->stepFrameTime(false);
+    ui->topMenu->stepFrameTime(false);
+    //让dt退出逐帧：恢复音频、把播放位置对齐到当前显示的帧
+    dt.endFrameStep();
 }
 
 void Player::adjustVolume(double delta)
@@ -432,7 +450,10 @@ void Player::changeSpeed(double delta)
 
 void Player::sliderSeek(double pos)
 {
-    if(m_isInit) dt.seek(pos);
+    if(!m_isInit) return;
+    //拖动进度条也退出逐帧
+    exitStepFrame();
+    dt.seek(pos);
 }
 
 void Player::timerEvent(QTimerEvent *e)
@@ -656,6 +677,8 @@ void Player::addToPlayList(const QString &path)
 void Player::play()
 {
     if(!m_isInit) return;
+    //如果在逐帧，先退出逐帧（位置会对齐）
+    exitStepFrame();
     ui->ctrlbar->stepFrameTime(false);
     ui->ctrlbar->setPausePictrue(false);
     ui->topMenu->stepFrameTime(false);
@@ -667,6 +690,8 @@ void Player::play()
 void Player::pause()
 {
     if(!m_isInit) return;
+    //如果在逐帧，先退出逐帧（位置会对齐）
+    exitStepFrame();
     ui->ctrlbar->setPausePictrue(true);
     m_isPause = true;
     dt.setPause(true);

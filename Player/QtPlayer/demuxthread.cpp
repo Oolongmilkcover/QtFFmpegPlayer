@@ -8,6 +8,11 @@
 extern "C" {
 #include <libavformat/avformat.h>
 }
+
+//往解码线程的包队列里放包时最多等多久（毫秒）
+//用带超时的等待，保证 demux 线程随时能响应 seek / 退出 / 逐帧回填
+static constexpr int PUSH_TIMEOUT_MS = 10;
+
 DemuxThread::DemuxThread(QObject *parent)
     : QThread{parent}
 {
@@ -176,81 +181,102 @@ void DemuxThread::start()
 
 void DemuxThread::setPause(bool isPause)
 {
-    bool flag = false;
-    if(m_isFrameStep){
-        flag = true;
-    }
-    endFrameStep();
-    m_isFrameStep.store(false);
-    m_lastIsPause.store(m_isPause);
+    //逐帧期间用户点了播放/暂停 → 先退出逐帧（内部会把播放位置对齐）
+    if (m_isFrameStep.load()) endFrameStep();
+
+    //正好有 seek 在处理时先别恢复渲染/解码，免得闪过期帧（doSeek 结束会按这个状态恢复）
+    bool hold = m_isSeeking.load();
+
+    m_pauseAfterSeek.store(isPause);
     m_isPause.store(isPause);
-    if (m_audioThread) m_audioThread->setPause(isPause);
-    if (m_videoDecodeThread) m_videoDecodeThread->setPause(isPause);
-    if(flag){
-        double pos = (double)getVideoPts() / totalMs;
-        seek(pos);
-    }
+    if (m_videoDecodeThread) m_videoDecodeThread->setPause(isPause || hold);
+    if (m_hasAudio && m_audioThread) m_audioThread->setPause(isPause || hold);
 }
 
 void DemuxThread::startFrameStep()
 {
-    if (!m_videoDecodeThread) return;
-    //暂停音频与视频渲染线程  解码线程不停止
-    // 音频暂停（声音停）
-    //if (m_audioThread) m_audioThread->setPause(true);
-    m_saveVolume = m_audioThread->getVolume();
-    double re = 0.0;
-    m_audioThread->setVolume(re);
-    // 视频只暂停渲染，解码继续
-    m_videoDecodeThread->setRenderPause(true);
-    m_isFrameStep.store(true);
+    if (!m_hasVideo || !m_videoDecodeThread) return;
+    if (m_isFrameStep.exchange(true)) return;      //已经在逐帧了
 
+    //逐帧期间：demux 与解码线程继续工作，只暂停“渲染”
+    m_pauseBeforeStep.store(m_isPause.load());
+    m_isPause.store(false);
+    m_videoDecodeThread->setPause(false);          //解码线程继续解码
+    m_videoDecodeThread->setRenderPause(true);     //渲染线程停下来等逐帧命令
+    //音频暂停（声音停），退出逐帧时会 seek 重新对齐音视频
+    if (m_hasAudio && m_audioThread) m_audioThread->setPause(true);
 }
 
 void DemuxThread::endFrameStep()
 {
-    if(!m_isFrameStep){
-        return ;
+    if (!m_isFrameStep.exchange(false)) return;
+
+    //进入逐帧之前是什么暂停状态，退出后就应该回到什么状态
+    const bool wasPause = m_pauseBeforeStep.load();
+
+    bool needSeek = true;
+    if (m_videoDecodeThread) {
+        //只有“没有回退过 + 没有音频”才可能无缝接着播
+        needSeek = !(m_videoDecodeThread->cursorAtNewest() && !m_hasAudio);
+        m_videoDecodeThread->clearStepRequests();
     }
-    m_isFrameStep.store(false);
-    //将视频pts传给音频
-    if (m_audioThread){
-        long long pts = m_videoDecodeThread->getVideoRenderPts();
-        m_audioThread->sendPts(pts);
-        //解除暂停
-        m_audioThread->setPause(false);
+
+    if (needSeek && !m_isExit.load() && totalMs > 0 && m_hasVideo) {
+        //逐帧后屏幕上的帧和 demux 的读位置大概率不一致 → seek 对齐
+        //直接用“当前显示帧的毫秒 pts”，不要走 pos<->ms 的浮点换算，
+        //否则可能多 1ms 而落到下一帧
+        requestSeekMs(getVideoPts());
+        setPause(wasPause);
+    } else {
+        setPause(wasPause);
     }
-    // 解除暂停
-    m_videoDecodeThread->setRenderPause(false);
-    m_audioThread->setVolume(m_saveVolume);
 }
 
 bool DemuxThread::stepNextFrame()
 {
-    if(m_disableSeekFlag) return false;
+    if(!m_hasVideo || m_disableSeekFlag || !m_videoDecodeThread) return false;
     if(!m_isFrameStep.load()){
         startFrameStep();
     }
-    m_videoDecodeThread->setStepFrameMode(1);
+    if(!m_isFrameStep.load()) return false;
+    m_videoDecodeThread->requestStep(1);
     return true;
 }
 
 bool DemuxThread::stepPrevFrame()
 {
-    if(m_disableSeekFlag) return false;
+    if(!m_hasVideo || m_disableSeekFlag || !m_videoDecodeThread) return false;
     if(!m_isFrameStep.load()){
         startFrameStep();
     }
-    m_videoDecodeThread->setStepFrameMode(2);
+    if(!m_isFrameStep.load()) return false;
+    m_videoDecodeThread->requestStep(-1);
     return true;
 }
 
 bool DemuxThread::seek(double pos)
 {
-    if(pos < 0|| pos > 1|| m_isFrameStep) {
+    if(pos < 0|| pos > 1) {
         return false;
     }
-    m_seekPos = pos;
+    //把比例换成毫秒后统一走 requestSeekMs
+    return requestSeekMs((long long)(pos * (double)totalMs));
+}
+
+bool DemuxThread::seekToMs(long long ms)
+{
+    return requestSeekMs(ms);
+}
+
+bool DemuxThread::requestSeekMs(long long ms)
+{
+    if(ms < 0) ms = 0;
+    if(totalMs > 0 && ms > totalMs) ms = totalMs;
+
+    //逐帧中先退出逐帧（否则读位置和显示位置会对不上）
+    if (m_isFrameStep.load()) endFrameStep();
+
+    m_seekMs.store(ms);
     m_serial.fetch_add(1);
     //纯音频（MP3等）：底层直接 seek
     if (m_disableSeekFlag) {
@@ -261,9 +287,8 @@ bool DemuxThread::seek(double pos)
             if (m_fmt_ctx && m_hasAudio) {
                 // 清空音频队列
                 m_audioThread->clear();
-                int64_t seekMs = m_seekPos * totalMs;
                 avformat_flush(m_fmt_ctx);
-                int64_t ts = av_rescale_q(seekMs, {1, 1000}, m_audioTimebase);
+                int64_t ts = av_rescale_q(ms, {1, 1000}, m_audioTimebase);
                 av_seek_frame(m_fmt_ctx, m_audioStream, ts, AVSEEK_FLAG_BACKWARD);
                 // 解码器 flush，丢弃 seek 前的残留
                 m_audioThread->flushBuf();
@@ -278,11 +303,10 @@ bool DemuxThread::seek(double pos)
     }
 
     //其余情况
-    m_lastIsPause.store(m_isPause);
-    setPause(false);
-    QThread::usleep(500);
+    //注意：这里不改暂停状态，doSeek() 会按 m_pauseAfterSeek 保存/恢复，
+    //否则用户在暂停时拖动进度条会被“恢复播放”
+    m_pauseAfterSeek.store(m_isPause.load());
     emit disableBtn();
-    m_seekPos = pos;
     m_isSeeking = true;
     return true;
 }
@@ -291,10 +315,18 @@ bool DemuxThread::seek(double pos)
 void DemuxThread::close()
 {
     m_isExit = true;
+    //退出逐帧（这里不做位置对齐，马上要关了）
+    m_isFrameStep.store(false);
+    m_isSeeking.store(false);
     setPause(true);  // 先暂停
     closeAVThread();// 关闭音视频线程
     clear();         // 清空队列
     wait();         // 等 demux 线程退出
+    //demux 线程已经退出，这时处理残留的包才安全
+    if(m_pendingPkt){
+        av_packet_free(&m_pendingPkt);
+        m_pendingPkt = nullptr;
+    }
     m_disableSeekFlag = false;
     m_containerName.clear();
     std::lock_guard<std::mutex> lock(m_mutex);
@@ -365,80 +397,16 @@ long long DemuxThread::getVideoPts()
 void DemuxThread::run()
 {
     while(!m_isExit){
-        //首要处理seek，在无限逐帧时这里引进了判断视频解码线程是否需要seek的判断
-        if(m_hasVideo&&m_videoDecodeThread&&m_videoDecodeThread->needSeek.load()){
-            qDebug()<<"1";
-            // m_videoDecodeThread->needSeek.store(false);
-            // double pos = (double)m_videoDecodeThread->needSeekMs.load() / totalMs;
-            // //下面是seek()的代码
-            // m_seekPos = pos;
-            // m_serial.fetch_add(1);
-            // m_lastIsPause.store(m_isPause);
-            // //setPause(false);
-            // //QThread::usleep(500);
-            // m_seekPos = pos;
-            // m_isSeeking = true;
+        //逐帧回填：历史帧退到头了，需要向后解码一段补进历史
+        if(m_hasVideo && m_videoDecodeThread && m_videoDecodeThread->needRefill.load()){
+            doBackwardRefill();
+            continue;
         }
+
         // 处理 seek
-        if (m_isSeeking)
+        if (m_isSeeking.exchange(false))
         {
-            m_isSeeking = false;
-            // 1先保存暂停状态
-            bool wasPause = m_lastIsPause;
-            setPause(true);
-
-            //清空两个 packet 队列和 frame 队列
-            if(m_hasVideo) m_videoDecodeThread->clear();
-            if(m_hasAudio) m_audioThread->clear();
-
-            //2.seek
-            int64_t seekMs = m_seekPos * totalMs;
-            {
-                std::lock_guard<std::mutex> lock(m_mutex);
-                if (!isCompleteInit || !m_fmt_ctx || (!m_hasVideo && !m_hasAudio)) {
-                    setPause(wasPause);
-                    emit ableBtn();
-                    continue;
-                }
-                avformat_flush(m_fmt_ctx);
-
-                //seek也要判断是哪个主时钟
-                if (m_hasVideo) {
-                    int64_t ts = av_rescale_q(seekMs, {1,1000}, m_videoTimebase);
-                    av_seek_frame(m_fmt_ctx, m_videoStream, ts, AVSEEK_FLAG_BACKWARD);
-                } else if (m_hasAudio) {
-                    int64_t ts = av_rescale_q(seekMs, {1,1000}, m_audioTimebase);
-                    av_seek_frame(m_fmt_ctx, m_audioStream, ts, AVSEEK_FLAG_BACKWARD);
-                }
-
-                // 解码器 flush
-                if (m_hasVideo) m_videoDecodeThread->flushBuf();
-                if (m_hasAudio) m_audioThread->flushBuf();
-            }
-            int serial = m_serial.load();
-            while (m_hasVideo && !m_isExit)
-            {
-                AVPacket *pkt = readPkt(); // 内部自己加锁、快速释放
-                if (!pkt) break;
-
-                if (pkt->stream_index == m_videoStream) {
-                    // repaintPts 内部只在解码瞬间加锁
-                    bool found = m_videoDecodeThread->repaintPts(pkt, seekMs,serial);
-                    if (found) break;
-                } else {
-                    av_packet_free(&pkt);
-                }
-            }
-            // 3. 更新 serial
-            if (m_hasAudio){
-                m_audioThread->setSerial(serial);
-                //复位音频重采样器与 atempo 滤镜
-                m_audioThread->requestFilterReset();
-            }
-
-            // 6. 恢复暂停状态
-            setPause(wasPause);
-            emit ableBtn();
+            doSeek();
             continue;
         }
 
@@ -449,19 +417,27 @@ void DemuxThread::run()
             continue;
 
         }
-        // 音视频同步
-        if (m_hasAudio) {
+        // 时钟
+        if (m_isFrameStep.load()) {
+            //逐帧：进度条跟着屏幕上那一帧走
+            if (m_hasVideo && m_videoDecodeThread)
+                pts.store(m_videoDecodeThread->getVideoRenderPts());
+        } else if (m_hasAudio) {
             pts.store(m_audioThread->getPts());
-            m_videoDecodeThread->setSynpts(pts);
+            if (m_hasVideo) m_videoDecodeThread->setSynpts(pts);
         } else if (m_hasVideo) {
             // 视频自己做主时钟
             pts.store(m_videoDecodeThread->getVideoRenderPts());
         }
-        AVPacket *pkt = readPkt();
+
+        // 上一次没推进队列的包优先重试
+        AVPacket *pkt = m_pendingPkt;
+        m_pendingPkt = nullptr;
+        if (!pkt) pkt = readPkt();
         if (!pkt)
         {
             //已经快结束了准备下一集或者重播
-            if(m_eof){
+            if(m_eof && !m_isFrameStep.load()){
                 //有视频时
                 if(m_hasVideo && !m_disableSeekFlag){
                     m_videoDecodeThread->setLastSome(true);
@@ -497,17 +473,174 @@ void DemuxThread::run()
             continue;
         }
         // 判断数据是音频
+        bool pushed = true;
         if(m_hasVideo && pkt->stream_index == m_videoStream && m_videoDecodeThread){
             //视频
-            m_videoDecodeThread->push(pkt,m_serial.load());
+            pushed = m_videoDecodeThread->tryPush(pkt,m_serial.load(),PUSH_TIMEOUT_MS);
         }else if(m_hasAudio && pkt->stream_index == m_audioStream && m_audioThread){
-            //音频
-            m_audioThread->push(pkt,m_serial.load());
+            if(m_isFrameStep.load()){
+                //逐帧期间音频不推进（退出逐帧时会seek重新对齐），直接丢
+                av_packet_free(&pkt);
+            }else{
+                //音频
+                pushed = m_audioThread->tryPush(pkt,m_serial.load(),PUSH_TIMEOUT_MS);
+            }
         }else{
             av_packet_free(&pkt);
         }
+        //队列满没推进去 → 留着下次重试，不能丢包
+        if(!pushed) m_pendingPkt = pkt;
         //qDebug()<<"mutexThread->push";
-        msleep(2);
+        msleep(1);
+    }
+
+    if(m_pendingPkt){
+        av_packet_free(&m_pendingPkt);
+        m_pendingPkt = nullptr;
+    }
+}
+
+void DemuxThread::doSeek()
+{
+    //过期数据丢掉
+    if(m_pendingPkt){
+        av_packet_free(&m_pendingPkt);
+        m_pendingPkt = nullptr;
+    }
+
+    // 1先保存暂停状态（以“seek 结束后该恢复成什么状态”为准）
+    bool wasPause = m_pauseAfterSeek.load();
+    //seek期间先停生产
+    m_isPause.store(true);
+    if (m_videoDecodeThread) m_videoDecodeThread->setPause(true);
+    if (m_hasAudio && m_audioThread) m_audioThread->setPause(true);
+
+    //清空两个 packet 队列和 frame 队列
+    if(m_hasVideo) m_videoDecodeThread->clear();
+    if(m_hasAudio) m_audioThread->clear();
+
+    //2.seek（目标毫秒由 requestSeekMs 统一换算好）
+    int64_t seekMs = m_seekMs.load();
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        if (!isCompleteInit || !m_fmt_ctx || (!m_hasVideo && !m_hasAudio)) {
+            m_isPause.store(wasPause);
+            if (m_videoDecodeThread) m_videoDecodeThread->setPause(wasPause);
+            if (m_hasAudio && m_audioThread) m_audioThread->setPause(wasPause);
+            emit ableBtn();
+            return;
+        }
+        avformat_flush(m_fmt_ctx);
+
+        //seek也要判断是哪个主时钟
+        if (m_hasVideo) {
+            int64_t ts = av_rescale_q(seekMs, {1,1000}, m_videoTimebase);
+            av_seek_frame(m_fmt_ctx, m_videoStream, ts, AVSEEK_FLAG_BACKWARD);
+        } else if (m_hasAudio) {
+            int64_t ts = av_rescale_q(seekMs, {1,1000}, m_audioTimebase);
+            av_seek_frame(m_fmt_ctx, m_audioStream, ts, AVSEEK_FLAG_BACKWARD);
+        }
+
+        // 解码器 flush
+        if (m_hasVideo) m_videoDecodeThread->flushBuf();
+        if (m_hasAudio) m_audioThread->flushBuf();
+    }
+    int serial = m_serial.load();
+    while (m_hasVideo && !m_isExit)
+    {
+        AVPacket *pkt = readPkt(); // 内部自己加锁、快速释放
+        if (!pkt) break;
+
+        if (pkt->stream_index == m_videoStream) {
+            // repaintPts 内部只在解码瞬间加锁
+            bool found = m_videoDecodeThread->repaintPts(pkt, seekMs,serial);
+            if (found) break;
+        } else {
+            av_packet_free(&pkt);
+        }
+    }
+    // 3. 更新 serial
+    if (m_hasAudio){
+        m_audioThread->setSerial(serial);
+        //复位音频重采样器与 atempo 滤镜
+        m_audioThread->requestFilterReset();
+    }
+
+    // 6. 恢复暂停状态
+    m_isPause.store(wasPause);
+    if (m_videoDecodeThread) m_videoDecodeThread->setPause(wasPause);
+    if (m_hasAudio && m_audioThread) m_audioThread->setPause(wasPause);
+    emit ableBtn();
+}
+
+void DemuxThread::doBackwardRefill()
+{
+    if(!m_videoDecodeThread){
+        return;
+    }
+    if(!m_hasVideo || !m_fmt_ctx){
+        m_videoDecodeThread->finishRefill(false);
+        return;
+    }
+
+    m_videoDecodeThread->needRefill.store(false);
+    const int64_t boundaryMs = m_videoDecodeThread->refillBoundaryPts.load();
+
+    //已经退出逐帧 / 没有有效边界 → 放弃这次回填
+    if(!m_isFrameStep.load() || boundaryMs <= 0){
+        m_videoDecodeThread->finishRefill(false);
+        return;
+    }
+
+    if(m_pendingPkt){
+        av_packet_free(&m_pendingPkt);
+        m_pendingPkt = nullptr;
+    }
+
+    //1.丢掉待解码数据（保留历史帧），让解码线程让出解码器
+    m_videoDecodeThread->clearForRefill();
+
+    //2.向后多退一点，一次回填尽量补满一批历史帧
+    double fps = m_videoDecodeThread->getFps();
+    if(fps <= 0) fps = 25.0;
+    long long spanMs = (long long)((FrameQueue::MAX_HISTORY_SIZE / 2) * 1000.0 / fps);
+    if(spanMs < 500)  spanMs = 500;
+    if(spanMs > 5000) spanMs = 5000;
+    int64_t targetMs = boundaryMs - spanMs;
+    if(targetMs < 0) targetMs = 0;
+
+    m_serial.fetch_add(1);
+    int serial = m_serial.load();
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        if(!m_fmt_ctx){
+            m_videoDecodeThread->finishRefill(false);
+            return;
+        }
+        avformat_flush(m_fmt_ctx);
+        int64_t ts = av_rescale_q(targetMs, {1,1000}, m_videoTimebase);
+        av_seek_frame(m_fmt_ctx, m_videoStream, ts, AVSEEK_FLAG_BACKWARD);
+    }
+    //解码器 flush，serial 同步（渲染线程也要跟着）
+    m_videoDecodeThread->flushBuf();
+    m_videoDecodeThread->setSerial(serial);
+
+    //3.从 targetMs 解码到 boundaryMs，把中间的帧回填进历史
+    auto readVideoPkt = [this]() -> AVPacket* {
+        while(!m_isExit){
+            AVPacket* p = readPkt();
+            if(!p) return nullptr;
+            if(p->stream_index == m_videoStream) return p;
+            av_packet_free(&p);
+        }
+        return nullptr;
+    };
+    bool ok = m_videoDecodeThread->refillBackward(boundaryMs, serial, readVideoPkt);
+    m_videoDecodeThread->finishRefill(ok);
+
+    //4.回填期间用户退出了逐帧 → 读位置需要重新对齐
+    if(!m_isFrameStep.load() && !m_isExit.load() && totalMs > 0){
+        requestSeekMs(getVideoPts());
     }
 }
 
@@ -518,8 +651,7 @@ void DemuxThread::setDone()
 
 void DemuxThread::videoCallSeek(int64_t ms)
 {
-    double pos = double(ms)/totalMs;
-    seek(pos);
+    seekToMs(ms);
 }
 
 bool DemuxThread::getIsExit() const

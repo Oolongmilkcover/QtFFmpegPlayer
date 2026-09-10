@@ -15,24 +15,36 @@ PacketQueue::~PacketQueue()
 
 
 // 放入Packet
-bool PacketQueue::push(AVPacket* pkt, int serial)
+bool PacketQueue::push(AVPacket* pkt, int serial, int timeoutMs)
 {
     if (!pkt)
         return false;
 
     std::unique_lock<std::mutex> lock(m_mutex);
 
-    // 队列满了就等待
-    m_cond.wait(lock, [this]()
-                {
-                    return m_abort ||
-                           static_cast<int>(m_queue.size()) < m_maxSize;
-                });
+    auto canPush = [this]()
+    {
+        return m_abort ||
+               static_cast<int>(m_queue.size()) < m_maxSize;
+    };
 
-    // 被abort
+    if (timeoutMs < 0)
+    {
+        // 队列满了就等待
+        m_cond.wait(lock, canPush);
+    }
+    else
+    {
+        // 超时唤醒：让调用者（demux线程）有机会处理 seek / 退出 / 逐帧回填
+        if (!m_cond.wait_for(lock, std::chrono::milliseconds(timeoutMs), canPush))
+        {
+            return false;
+        }
+    }
+
+    // 被abort：不接管所有权，交给调用者处理
     if (m_abort)
     {
-        av_packet_free(&pkt);
         return false;
     }
 

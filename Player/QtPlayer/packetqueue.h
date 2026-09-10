@@ -88,8 +88,11 @@ public:
     PacketQueue& operator=(const PacketQueue&) = delete;
 
     // 放入Packet
-    // Queue满时阻塞
-    bool push(AVPacket* pkt, int serial);
+    // timeoutMs <  0：Queue满时一直阻塞等
+    // timeoutMs >= 0：最多等 timeoutMs 毫秒，超时返回 false
+    // 返回 true  = 队列接管了 pkt 所有权
+    // 返回 false = 没有接管（超时/已abort），调用者需要自己处理 pkt
+    bool push(AVPacket* pkt, int serial, int timeoutMs = -1);
 
     // 获取Packet
     // block=true：没有Packet就等待

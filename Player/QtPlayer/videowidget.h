@@ -17,6 +17,14 @@ public:
     //不管成功与否都释放frame空间
     virtual void setPaint(AVFrame *frame);
 
+    /*
+     * "上屏最新帧优先"用的两个钩子（渲染线程调用）：
+     * 同一时刻只允许一帧在 GUI 线程里排队等上屏，GUI 线程忙不过来时
+     * 渲染线程直接丢帧，而不是把带 buffer 的帧一层层堆在事件队列里。
+     */
+    bool beginPaint();
+    void endPaint();
+
     VideoWidget(QWidget *parent);
     ~VideoWidget();
 
@@ -54,8 +62,15 @@ private:
     // ========== 当前滤镜类型（原子，避免跨线程问题） ==========
     std::atomic<int> m_filterType{0};
 
-    //材质内存空间
-    unsigned char *datas[3] = { 0 };
+    /*
+     * 当前要显示的那一帧（持有引用）。
+     * paintGL() 直接从这一帧的内存上传纹理，不再先 memcpy 到中间缓冲，
+     * 所以 setPaint() 只是"换指针 + update()"，GUI 线程每帧少拷 3MB。
+     */
+    AVFrame* m_frame = nullptr;
+
+    //是否已经有一帧正在 GUI 线程排队等上屏
+    std::atomic<bool> m_paintInFlight{false};
 
     int width = 240;
     int height = 128;

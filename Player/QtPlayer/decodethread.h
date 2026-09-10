@@ -24,6 +24,9 @@ public:
     virtual ~DecodeThread();
     //将pkt加入队列
     void push(AVPacket *pkt,int serial);
+    //尝试将pkt加入队列，最多等 timeoutMs 毫秒
+    //返回 false 表示没有入队，此时 pkt 仍然由调用者持有（不会释放）
+    bool tryPush(AVPacket *pkt,int serial,int timeoutMs);
     //关闭
     void close();
     //这是退出
