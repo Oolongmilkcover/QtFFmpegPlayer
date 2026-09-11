@@ -112,7 +112,7 @@ void AudioThread::clear()
 {
     if (m_pktQue)   m_pktQue->clear();
     if (m_frameQue) m_frameQue->clear();
-    //if (m_auPlayer) m_auPlayer->clear();
+    if (m_auPlayer) m_auPlayer->clear();   // 临时回退：A/B 对照排查长按 seek 后冻住（会带回 seek 后旧位置残留）
     pts = 0;
     m_audioPts.store(0);
 }

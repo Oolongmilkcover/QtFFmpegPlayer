@@ -98,6 +98,8 @@ public:
     //是否有视频流
     bool hasVideo() const { return m_hasVideo; }
 
+    std::atomic<bool> m_seekPauseing = false;
+
 private slots:
     void setDone();
 
@@ -171,6 +173,8 @@ private:
     // 实际解析出来的封装名
     QString m_containerName;
     std::atomic<bool> m_disableSeekFlag{false};
+
+
 
     // 纯音频，需要禁用Seek功能 的格式集合
     const QSet<QString> m_audioOnlyFormat = {

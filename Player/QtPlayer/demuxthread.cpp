@@ -260,6 +260,7 @@ bool DemuxThread::seek(double pos)
         return false;
     }
     //把比例换成毫秒后统一走 requestSeekMs
+
     return requestSeekMs((long long)(pos * (double)totalMs));
 }
 
@@ -276,20 +277,28 @@ bool DemuxThread::requestSeekMs(long long ms)
     //逐帧中先退出逐帧（否则读位置和显示位置会对不上）
     if (m_isFrameStep.load()) endFrameStep();
 
+
     m_seekMs.store(ms);
     m_serial.fetch_add(1);
     //纯音频（MP3等）：底层直接 seek
     if (m_disableSeekFlag) {
         bool wasPause = m_isPause.load();
+        m_seekPauseing.store(true);
         setPause(true); // 先暂停
         {
             std::lock_guard<std::mutex> lock(m_mutex);
             if (m_fmt_ctx && m_hasAudio) {
                 // 清空音频队列
                 m_audioThread->clear();
+                // 注意：clear() 会把音频时钟(m_audioPts)一起清零，而进度条读的就是这个时钟，
+                // 于是 seek 后会闪一下“回到开头”，连环快进也会因为读到 0 而永远算成 0+5000。
+                // 这里只是把时钟锚到本次 seek 目标；等新音频解码出来，sendPts 会自然接管。
+                m_audioThread->sendPts(ms);
+                pts.store(ms);
                 avformat_flush(m_fmt_ctx);
                 int64_t ts = av_rescale_q(ms, {1, 1000}, m_audioTimebase);
                 av_seek_frame(m_fmt_ctx, m_audioStream, ts, AVSEEK_FLAG_BACKWARD);
+                m_seekPauseing.store(false);
                 // 解码器 flush，丢弃 seek 前的残留
                 m_audioThread->flushBuf();
                 // 重置重采样器 + atempo 滤镜（丢弃残留）
@@ -304,8 +313,15 @@ bool DemuxThread::requestSeekMs(long long ms)
 
     //其余情况
     //注意：这里不改暂停状态，doSeek() 会按 m_pauseAfterSeek 保存/恢复，
-    //否则用户在暂停时拖动进度条会被“恢复播放”
-    m_pauseAfterSeek.store(m_isPause.load());
+    //否则用户在暂停时拖动进度条会被“恢复播放”。
+    //
+    //但采样必须跳过“seek 正在执行中”的窗口：doSeek 为了独占生产者会把 m_isPause
+    //临时置 true 再恢复。长按方向键时下一次请求正好落进那个窗口，照抄就会把这份
+    //临时状态当成用户意图存进 m_pauseAfterSeek，seek 结束后播放器卡在暂停
+    //（现象：长按快进/快退后要按两次播放键；纯音频走上面的直连分支所以没有）。
+    if (!m_isSeeking.load()) {
+        m_pauseAfterSeek.store(m_isPause.load());
+    }
     emit disableBtn();
     m_isSeeking = true;
     return true;
@@ -404,7 +420,11 @@ void DemuxThread::run()
         }
 
         // 处理 seek
-        if (m_isSeeking.exchange(false))
+        // 注意：这里不再用 exchange(false) 提前清标志——m_isSeeking 现在表示
+        // “seek 正在进行中”，必须一直保持到 doSeek() 结束：
+        // setPause() 用它作 hold（“seek 处理中先别恢复解码/渲染”），
+        // requestSeekMs() 用它跳过“doSeek 临时暂停”的窗口。
+        if (m_isSeeking.load())
         {
             doSeek();
             continue;
@@ -512,6 +532,9 @@ void DemuxThread::doSeek()
     bool wasPause = m_pauseAfterSeek.load();
     //seek期间先停生产
     m_isPause.store(true);
+    m_seekPauseing.store(true);
+
+    pts.store(m_seekMs.load());
     if (m_videoDecodeThread) m_videoDecodeThread->setPause(true);
     if (m_hasAudio && m_audioThread) m_audioThread->setPause(true);
 
@@ -521,12 +544,16 @@ void DemuxThread::doSeek()
 
     //2.seek（目标毫秒由 requestSeekMs 统一换算好）
     int64_t seekMs = m_seekMs.load();
+    // 同上：上面的 clear() 已经把音频时钟清零，这里把它锚回本次 seek 目标，
+    // 避免进度条闪回开头、以及连环快进读到 0 而一直算成 0+5000。
+    if (m_hasAudio && m_audioThread) m_audioThread->sendPts(seekMs);
     {
         std::lock_guard<std::mutex> lock(m_mutex);
         if (!isCompleteInit || !m_fmt_ctx || (!m_hasVideo && !m_hasAudio)) {
             m_isPause.store(wasPause);
             if (m_videoDecodeThread) m_videoDecodeThread->setPause(wasPause);
             if (m_hasAudio && m_audioThread) m_audioThread->setPause(wasPause);
+            m_isSeeking.store(false);   // seek 结束，清“进行中”标志
             emit ableBtn();
             return;
         }
@@ -540,6 +567,7 @@ void DemuxThread::doSeek()
             int64_t ts = av_rescale_q(seekMs, {1,1000}, m_audioTimebase);
             av_seek_frame(m_fmt_ctx, m_audioStream, ts, AVSEEK_FLAG_BACKWARD);
         }
+        m_seekPauseing.store(false);
 
         // 解码器 flush
         if (m_hasVideo) m_videoDecodeThread->flushBuf();
@@ -570,6 +598,9 @@ void DemuxThread::doSeek()
     m_isPause.store(wasPause);
     if (m_videoDecodeThread) m_videoDecodeThread->setPause(wasPause);
     if (m_hasAudio && m_audioThread) m_audioThread->setPause(wasPause);
+    // seek 结束，清“进行中”标志：此后新的 seek 请求才能重新采样用户的暂停意图
+    m_isSeeking.store(false);
+
     emit ableBtn();
 }
 

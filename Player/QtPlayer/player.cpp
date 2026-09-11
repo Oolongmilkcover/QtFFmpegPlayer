@@ -10,6 +10,12 @@
 #include <QMimeData>
 #include <QUrl>
 #include <QFileInfo>
+
+//快进/快退的“尾部”去抖窗口：停止按键多久后，把累积的目标补上。
+//配合“前沿”（这一串按键的第一次立即生效）实现 B 站式手感：
+//第一次按下马上有反馈，连按/长按只累积，静默 kSeekDebounceMs 后再补一次最终位置。
+static constexpr int kSeekDebounceMs = 120;
+
 Player::Player(QWidget *parent)
     : QWidget(parent)
     , ui(new Ui::Player)
@@ -138,6 +144,7 @@ Player::~Player()
 {
     if (!m_isClosing) dt.close();
     if (m_timerId) killTimer(m_timerId);
+    if (m_seekDebounceTimerId) killTimer(m_seekDebounceTimerId);
     delete ui;
 }
 
@@ -310,6 +317,12 @@ void Player::playFile(const QString &path)
     m_isInit = true;
     // 重置滑块状态，避免之前操作的影响
     isSliderPress = false;                 // 清除按下标志
+    // 换文件时丢弃上一次遗留的待生效 seek 与去抖定时器
+    if (m_seekDebounceTimerId) {
+        killTimer(m_seekDebounceTimerId);
+        m_seekDebounceTimerId = 0;
+    }
+    m_pendingSeekMs = -1;
     ui->ctrlbar->setSliderValue(0);            // 滑块归零
     ui->ctrlbar->setSliderMaximum(dt.totalMs);
     ui->ctrlbar->setDisabled(false);
@@ -361,28 +374,49 @@ void Player::on_playList_doubleClicked(QListWidgetItem *item)
 
 void Player::ffSeekFiveSec()
 {
-    if(!m_isInit){
-        return;
-    }
-    //逐帧中快进：先退出逐帧
-    exitStepFrame();
-    long long totalMs = dt.totalMs;
-    long long seekPtsMs =  (dt.getVideoPts()+5000) > totalMs ? totalMs : (dt.getVideoPts()+5000);
-    double pos = (double)seekPtsMs / totalMs;
-    dt.seek(pos);
+    queueSeekBy(+5000);
 }
 
 void Player::rewindSeekFiveSec()
 {
-    if(!m_isInit){
-        return;
-    }
-    //逐帧中快退：先退出逐帧
+    queueSeekBy(-5000);
+}
+
+// 快进/快退统一入口：前沿立即生效 + 尾部去抖收尾。
+//   前沿：这一串按键的第一次立即 seek（消除“按了要等”的延迟感）
+//   尾部：窗口内的后续按键只累积到 m_pendingSeekMs，静默 kSeekDebounceMs 后
+//         由 timerEvent 补一次最终位置；只按一次时它是空的，收尾会自动跳过。
+// 因此：单按 = 1 次 seek，连按/长按 = 2 次 seek（而不是 N 次）。
+void Player::queueSeekBy(long long deltaMs)
+{
+    if(!m_isInit || dt.m_seekPauseing.load()) return;
+    //逐帧中快进/快退：先退出逐帧（位置会对齐）
     exitStepFrame();
-    long long totalMs = dt.totalMs;
-    long long seekPtsMs =  (dt.getVideoPts()- 5000) < 0 ? 0 : (dt.getVideoPts()- 5000);
-    double pos = (double)seekPtsMs / totalMs ;
-    dt.seek(pos);
+
+    const long long totalMs = dt.totalMs;
+    if(totalMs <= 0) return;   //时长未知，没法和范围对齐
+
+    //基准：有“已累积但还没生效”的目标就接着累积，否则取当前主时钟位置
+    const long long base = (m_pendingSeekMs >= 0) ? m_pendingSeekMs : dt.pts.load();
+    long long target = base + deltaMs;
+    if(target < 0) target = 0;
+    if(target > totalMs) target = totalMs;
+
+    //进度条 + 时间文字立刻跟到目标（setSliderValue 内部会同步 playSlider 和 playTimeEdit）
+    ui->ctrlbar->setSliderValue((int)target);
+
+    if(m_seekDebounceTimerId == 0){
+        //前沿：这一串按键的第一次立即生效
+        m_pendingSeekMs = -1;
+        dt.seekToMs(target);
+    }else{
+        //后续按键：只累积，等静默后再 seek 末次
+        m_pendingSeekMs = target;
+    }
+
+    //尾部：每次按键都重置，静默 kSeekDebounceMs 后由 timerEvent 收尾
+    if(m_seekDebounceTimerId) killTimer(m_seekDebounceTimerId);
+    m_seekDebounceTimerId = startTimer(kSeekDebounceMs);
 }
 
 
@@ -451,6 +485,12 @@ void Player::changeSpeed(double delta)
 void Player::sliderSeek(double pos)
 {
     if(!m_isInit) return;
+    //用户主动拖动：丢弃还没生效的累积目标，免得它晚一步把进度拽回去
+    if(m_seekDebounceTimerId){
+        killTimer(m_seekDebounceTimerId);
+        m_seekDebounceTimerId = 0;
+    }
+    m_pendingSeekMs = -1;
     //拖动进度条也退出逐帧
     exitStepFrame();
     dt.seek(pos);
@@ -458,13 +498,28 @@ void Player::sliderSeek(double pos)
 
 void Player::timerEvent(QTimerEvent *e)
 {
+    //去抖定时器到点 = 用户已经停止按键 → 现在真正 seek 一次
+    if (m_seekDebounceTimerId && e->timerId() == m_seekDebounceTimerId)
+    {
+        killTimer(m_seekDebounceTimerId);
+        m_seekDebounceTimerId = 0;
+        const long long target = m_pendingSeekMs;
+        m_pendingSeekMs = -1;
+        //用户此刻正在拖动进度条：让拖动接管，丢弃累积目标，
+        //否则会在拖动过程中先跳一次（随后松手又会按拖动位置再跳一次）
+        if (ui->ctrlbar->getSliderPress()) return;
+        if (target >= 0) dt.seekToMs(target);
+        return;
+    }
+
     if (isSliderPress)return;
     if (ui->ctrlbar->getSliderPress()) return ;
     long long total = dt.totalMs;
     if (total > 0)
     {
-        ui->ctrlbar->setSliderValue(dt.pts.load());
-        //qDebug()<<dt.pts.load();
+        //有待生效目标时，进度条显示目标（跟着按键走），而不是当前播放位置
+        const long long showMs = (m_pendingSeekMs >= 0) ? m_pendingSeekMs : dt.pts.load();
+        ui->ctrlbar->setSliderValue((int)showMs);
     }
 }
 
@@ -475,6 +530,12 @@ void Player::closeEvent(QCloseEvent *e)
         return;
     }
     m_isClosing = true;
+    // 丢掉还没生效的 seek，避免退出过程中再触发一次
+    if (m_seekDebounceTimerId) {
+        killTimer(m_seekDebounceTimerId);
+        m_seekDebounceTimerId = 0;
+    }
+    m_pendingSeekMs = -1;
     // 防用户在退出过程中乱点
     ui->ctrlbar->setDisabled(true);
     ui->topMenu->setDisabled(true);

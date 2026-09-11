@@ -94,6 +94,9 @@ private slots:
 
     void rewindSeekFiveSec();
 
+    // 快进/快退统一入口：把步长累加到“待生效目标”并重启去抖定时器（deltaMs 可正可负）
+    void queueSeekBy(long long deltaMs);
+
     void stepFrame(int mode);
 
     void adjustVolume(double delta);
@@ -110,6 +113,12 @@ private:
     bool m_isInit = false;
 
     int m_timerId = 0;
+
+    // —— 快进/快退去抖：短时间内连续按键只累积，停下来才真正 seek 一次 ——
+    // 待生效的 seek 目标（毫秒），-1 表示当前没有待生效目标
+    long long m_pendingSeekMs = -1;
+    // 去抖定时器 id（0 = 未启动）
+    int m_seekDebounceTimerId = 0;
 
     bool m_isClosing = false;
 
