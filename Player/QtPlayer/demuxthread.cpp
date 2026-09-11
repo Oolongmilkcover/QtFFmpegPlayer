@@ -57,6 +57,7 @@ bool DemuxThread::openFile(const char* url,VideoWidget* widget)
     close();
     m_isExit.store(false);
     m_serial.store(0); //每次加载时serial清零
+    m_seekPauseing.store(false); //兜底：清掉上一次可能残留的“seek 进行中”
 
     bool tmpRet = true;
     {
@@ -298,7 +299,6 @@ bool DemuxThread::requestSeekMs(long long ms)
                 avformat_flush(m_fmt_ctx);
                 int64_t ts = av_rescale_q(ms, {1, 1000}, m_audioTimebase);
                 av_seek_frame(m_fmt_ctx, m_audioStream, ts, AVSEEK_FLAG_BACKWARD);
-                m_seekPauseing.store(false);
                 // 解码器 flush，丢弃 seek 前的残留
                 m_audioThread->flushBuf();
                 // 重置重采样器 + atempo 滤镜（丢弃残留）
@@ -307,6 +307,10 @@ bool DemuxThread::requestSeekMs(long long ms)
                 m_audioThread->setSerial(m_serial.load());
             }
         }
+        // 无论上面的 if 是否进去过，都必须清掉“seek 进行中”：
+        // 否则 m_fmt_ctx 为空 / 没有音频流时它会永久停在 true，
+        // player.cpp 的 queueSeekBy 开头会直接 return，快进/快退彻底失效。
+        m_seekPauseing.store(false);
         setPause(wasPause);
         return true;
     }
@@ -345,6 +349,7 @@ void DemuxThread::close()
     }
     m_disableSeekFlag = false;
     m_containerName.clear();
+    m_seekPauseing.store(false);   // 兜底：别把“seek 进行中”带进下一次播放
     std::lock_guard<std::mutex> lock(m_mutex);
     if (m_fmt_ctx) {
         avformat_close_input(&m_fmt_ctx);
@@ -553,7 +558,8 @@ void DemuxThread::doSeek()
             m_isPause.store(wasPause);
             if (m_videoDecodeThread) m_videoDecodeThread->setPause(wasPause);
             if (m_hasAudio && m_audioThread) m_audioThread->setPause(wasPause);
-            m_isSeeking.store(false);   // seek 结束，清“进行中”标志
+            m_isSeeking.store(false);    // seek 结束，清“进行中”标志
+            m_seekPauseing.store(false); // 早退也必须清，否则快进/快退会永久失效
             emit ableBtn();
             return;
         }

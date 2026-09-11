@@ -112,7 +112,7 @@ void AudioThread::clear()
 {
     if (m_pktQue)   m_pktQue->clear();
     if (m_frameQue) m_frameQue->clear();
-    if (m_auPlayer) m_auPlayer->clear();   // 临时回退：A/B 对照排查长按 seek 后冻住（会带回 seek 后旧位置残留）
+    if (m_auPlayer) m_auPlayer->clear();   // 丢弃声卡缓冲里的残留，避免 seek 后先播出旧位置的一小段
     pts = 0;
     m_audioPts.store(0);
 }
