@@ -367,7 +367,14 @@ void Player::ffSeekFiveSec()
     //逐帧中快进：先退出逐帧
     exitStepFrame();
     long long totalMs = dt.totalMs;
-    long long seekPtsMs =  (dt.getVideoPts()+5000) > totalMs ? totalMs : (dt.getVideoPts()+5000);
+    if(totalMs <= 0){
+        return;   //时长未知：避免 pos 变成 NaN 后绕过 seek() 的范围检查
+    }
+    //必须用与进度条同一个主时钟（dt.pts：有音频时即音频时钟）。
+    //不能用 getVideoPts()——纯音频时视频渲染线程没有帧，它恒为初值 0，
+    //会让快进永远跳到 0:05，与进度条显示的当前位置完全脱节。
+    long long curMs = dt.pts.load();
+    long long seekPtsMs = (curMs + 5000) > totalMs ? totalMs : (curMs + 5000);
     double pos = (double)seekPtsMs / totalMs;
     dt.seek(pos);
 }
@@ -380,8 +387,13 @@ void Player::rewindSeekFiveSec()
     //逐帧中快退：先退出逐帧
     exitStepFrame();
     long long totalMs = dt.totalMs;
-    long long seekPtsMs =  (dt.getVideoPts()- 5000) < 0 ? 0 : (dt.getVideoPts()- 5000);
-    double pos = (double)seekPtsMs / totalMs ;
+    if(totalMs <= 0){
+        return;
+    }
+    //同 ffSeekFiveSec：用主时钟，不能用 getVideoPts()（纯音频时恒为 0 → 永远回到开头）
+    long long curMs = dt.pts.load();
+    long long seekPtsMs = (curMs - 5000) < 0 ? 0 : (curMs - 5000);
+    double pos = (double)seekPtsMs / totalMs;
     dt.seek(pos);
 }
 

@@ -109,20 +109,10 @@ bool DemuxThread::openFile(const char* url,VideoWidget* widget)
             m_hasVideo = (m_videoStream >= 0);
             m_hasAudio = (m_audioStream >= 0);
 
-            //判断是否为音频文件 是就关闭seek
-            m_disableSeekFlag = false;
-            m_containerName.clear();
+            //记录封装名，仅用于日志；是否纯音频一律由 m_hasVideo 判断（不再依赖容器名白名单）
             if(m_fmt_ctx->iformat != nullptr)
             {
-
-                m_containerName = QString::fromUtf8(m_fmt_ctx->iformat->name);
-                qDebug()<<"容器名称(iformat->name): "<<m_containerName;
-                //容器属于纯音频集合
-                if(m_audioOnlyFormat.contains(m_containerName.toLower()))
-                {
-                    m_disableSeekFlag = true;
-                    qDebug()<<"检测到音频文件";
-                }
+                qDebug()<<"容器名称(iformat->name): "<<QString::fromUtf8(m_fmt_ctx->iformat->name);
             }
         }
     }
@@ -234,7 +224,7 @@ void DemuxThread::endFrameStep()
 
 bool DemuxThread::stepNextFrame()
 {
-    if(!m_hasVideo || m_disableSeekFlag || !m_videoDecodeThread) return false;
+    if(!m_hasVideo || !m_videoDecodeThread) return false;
     if(!m_isFrameStep.load()){
         startFrameStep();
     }
@@ -245,7 +235,7 @@ bool DemuxThread::stepNextFrame()
 
 bool DemuxThread::stepPrevFrame()
 {
-    if(!m_hasVideo || m_disableSeekFlag || !m_videoDecodeThread) return false;
+    if(!m_hasVideo || !m_videoDecodeThread) return false;
     if(!m_isFrameStep.load()){
         startFrameStep();
     }
@@ -278,31 +268,19 @@ bool DemuxThread::requestSeekMs(long long ms)
 
     m_seekMs.store(ms);
     m_serial.fetch_add(1);
-    //纯音频（MP3等）：底层直接 seek
-    if (m_disableSeekFlag) {
-        bool wasPause = m_isPause.load();
-        setPause(true); // 先暂停
-        {
-            std::lock_guard<std::mutex> lock(m_mutex);
-            if (m_fmt_ctx && m_hasAudio) {
-                // 清空音频队列
-                m_audioThread->clear();
-                avformat_flush(m_fmt_ctx);
-                int64_t ts = av_rescale_q(ms, {1, 1000}, m_audioTimebase);
-                av_seek_frame(m_fmt_ctx, m_audioStream, ts, AVSEEK_FLAG_BACKWARD);
-                // 解码器 flush，丢弃 seek 前的残留
-                m_audioThread->flushBuf();
-                // 重置重采样器 + atempo 滤镜（丢弃残留）
-                m_audioThread->requestFilterReset();
-                // 同步 serial
-                m_audioThread->setSerial(m_serial.load());
-            }
-        }
-        setPause(wasPause);
-        return true;
-    }
 
-    //其余情况
+    // 所有 seek 统一走异步路径：真正的 flush / av_seek_frame 由 demux 线程里的 doSeek() 执行。
+    //
+    // 这里曾经为纯音频（MP3 等）开过一条捷径，在调用者（GUI）线程里直接
+    // avformat_flush + av_seek_frame。那是数据竞争：readPkt() 里的 av_read_frame
+    // 并不持 m_mutex（只在进门检查指针时用了锁），这把锁挡不住并发的读操作，
+    // 两个线程会同时操作同一个 AVFormatContext。表现为纯音频下 seek 不生效 / 位置回跳，
+    // 甚至先冒出旧位置的一小段声音（该捷径也没清 m_pendingPkt：seek 前读到的暂存包
+    // 会在 seek 之后按新的 serial 投递进音频队列）。
+    //
+    // doSeek() 在 demux 线程内执行，天然与 readPkt() 串行，且内部已分别处理
+    // 有视频（m_videoTimebase）与无视频（m_audioTimebase）两种情况，无需特殊分支。
+    //
     //注意：这里不改暂停状态，doSeek() 会按 m_pauseAfterSeek 保存/恢复，
     //否则用户在暂停时拖动进度条会被“恢复播放”
     m_pauseAfterSeek.store(m_isPause.load());
@@ -327,8 +305,6 @@ void DemuxThread::close()
         av_packet_free(&m_pendingPkt);
         m_pendingPkt = nullptr;
     }
-    m_disableSeekFlag = false;
-    m_containerName.clear();
     std::lock_guard<std::mutex> lock(m_mutex);
     if (m_fmt_ctx) {
         avformat_close_input(&m_fmt_ctx);
@@ -439,7 +415,7 @@ void DemuxThread::run()
             //已经快结束了准备下一集或者重播
             if(m_eof && !m_isFrameStep.load()){
                 //有视频时
-                if(m_hasVideo && !m_disableSeekFlag){
+                if(m_hasVideo){
                     m_videoDecodeThread->setLastSome(true);
                     if(m_videoDecodeThread->getPlayDone()){
                         m_videoDecodeThread->setLastSome(false);
@@ -453,7 +429,7 @@ void DemuxThread::run()
                     }
                 }
                 //只有音频时
-                if ((m_hasAudio && !m_hasVideo)|| m_disableSeekFlag) {
+                if (m_hasAudio && !m_hasVideo) {
                     if (m_audioThread->isPlayFinished()) {
                         // 播完了
                         m_eof.store(false);

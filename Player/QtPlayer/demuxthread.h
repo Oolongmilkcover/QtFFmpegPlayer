@@ -168,29 +168,14 @@ private:
     //正在处理的 seek 结束后应该恢复成什么暂停状态
     std::atomic<bool> m_pauseAfterSeek = false;
 
-    // 实际解析出来的封装名
-    QString m_containerName;
-    std::atomic<bool> m_disableSeekFlag{false};
-
-    // 纯音频，需要禁用Seek功能 的格式集合
-    const QSet<QString> m_audioOnlyFormat = {
-        "mp3",
-        "aac",
-        "flac",
-        "ogg",
-        "opus",
-        "wav",
-        "wma",
-        "ape",
-        "alac",
-        "m4a",
-        "ac3",
-        "eac3",
-        "dts",
-        "amr",
-        "wv",
-        "tta"
-    };
+    // 注：这里原先有 m_containerName / m_disableSeekFlag / m_audioOnlyFormat，
+    // 用「封装名是否在纯音频集合里」判断纯音频，并据此在调用者（GUI）线程里直接
+    // 调 av_seek_frame。该做法有两个问题：
+    //   1) 容器名会漏判：纯音频 .m4a 的 iformat->name 是 "mov,mp4,m4a,3gp,3g2,mj2"，
+    //      并不等于集合里的 "m4a"；而 !m_hasVideo 对所有纯音频文件都成立；
+    //   2) 在调用者线程里 seek 会与 demux 线程的 av_read_frame 并发操作同一个
+    //      AVFormatContext（readPkt() 并不持 m_mutex），属于数据竞争。
+    // 现在纯音频统一用 !m_hasVideo 判断，所有 seek 一律走 demux 线程里的 doSeek()。
 
     std::atomic<double> m_speed{1.0};
 };
