@@ -38,6 +38,7 @@ param(
     [string] $OutDir     = '',
     [string] $Generator  = 'Visual Studio 17 2022',
     [switch] $NoSoftwareGL,
+    [switch] $NoCompilerRuntime,
     [switch] $SkipBuild,
     [switch] $NoZip,
     [switch] $DryRun
@@ -166,7 +167,36 @@ Say '3/4 组装运行目录…'
 $exeDst = Join-Path $pkgDir 'QtPlayer.exe'
 Copy-Item $exeSrc.FullName $exeDst
 
-$wdArgs = @('--release', '--no-translations', '--compiler-runtime')
+# windeployqt 的 --compiler-runtime 依赖 VCINSTALLDIR 环境变量；在 IDE 之外运行时它通常没被设置，
+# 于是 windeployqt 会【静默跳过】MSVC 运行库，导致没装 VC++ 可再发行组件的机器打不开。
+# 这里既补上 VCINSTALLDIR，也在下面显式拷贝一份 CRT，双保险。
+$vcRedistDir = $null
+$crtDlls = @()
+if (-not $NoCompilerRuntime) {
+    $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+    $vsRoot = $null
+    if (Test-Path $vswhere) {
+        $vsRoot = (& $vswhere -latest -products * -property installationPath 2>$null | Select-Object -First 1)
+    }
+    if ($vsRoot) {
+        $env:VCINSTALLDIR = Join-Path $vsRoot 'VC'
+        $verDir = Get-ChildItem (Join-Path $env:VCINSTALLDIR 'Redist\MSVC') -Directory -ErrorAction SilentlyContinue |
+                  Where-Object { $_.Name -match '^\d+(\.\d+)+$' } |
+                  Sort-Object { [version]$_.Name } -Descending | Select-Object -First 1
+        if ($verDir) {
+            $crtDir = Get-ChildItem (Join-Path $verDir.FullName 'x64') -Directory -Filter 'Microsoft.VC*.CRT' -ErrorAction SilentlyContinue |
+                      Select-Object -First 1
+            if ($crtDir) {
+                $vcRedistDir = $crtDir.FullName
+                $crtDlls = @(Get-ChildItem $vcRedistDir -Filter '*.dll' -File)
+            }
+        }
+    }
+}
+
+# 注意：CRT 由下面显式拷贝（app-local），所以对 windeployqt 关掉它自己的运行时拷贝，
+# 否则它会多塞一个 ~25MB 的 vc_redist.x64.exe 安装包，对「绿色版」是多余的。
+$wdArgs = @('--release', '--no-translations', '--no-compiler-runtime')
 if ($NoSoftwareGL) { $wdArgs += '--no-opengl-sw' }
 $wdArgs += $exeDst
 & $windeployqt @wdArgs
@@ -176,6 +206,15 @@ foreach ($dll in $resolved) {
     Copy-Item $dll.FullName (Join-Path $pkgDir $dll.Name) -Force
 }
 Good "Qt 依赖与 FFmpeg 运行库已就位"
+
+if (-not $NoCompilerRuntime) {
+    if ($crtDlls.Count -gt 0) {
+        foreach ($d in $crtDlls) { Copy-Item $d.FullName (Join-Path $pkgDir $d.Name) -Force }
+        Good ("MSVC 运行库已补齐：{0} 个（{1}）" -f $crtDlls.Count, $vcRedistDir)
+    } else {
+        Warn '未找到 MSVC 运行库（vcruntime140.dll 等）；目标机器若未装 VC++ 2015-2022 可再发行组件将无法启动'
+    }
+}
 
 # 兜底自检：把 Qt6Core 与 avcodec 同时缺失视为明显异常
 if (-not (Get-ChildItem $pkgDir -Recurse -Filter 'Qt6Core.dll' -ErrorAction SilentlyContinue)) {
