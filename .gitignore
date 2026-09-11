@@ -1,0 +1,29 @@
+# ---------- 构建产物 ----------
+build/
+build-*/
+cmake-build-*/
+out/
+*.obj
+*.o
+*.pdb
+*.ilk
+*.exp
+*.idb
+*.log
+
+# ---------- IDE / 编辑器 ----------
+.qtcreator/
+*.user
+*.user.*
+.vscode/
+.idea/
+.vs/
+
+# ---------- 系统 ----------
+.DS_Store
+Thumbs.db
+
+# ---------- 大素材 ----------
+# 演示视频/GIF 建议压缩后放 docs/media/ 或走外链（GitHub 单文件 100MB 上限）
+# 原始演示视频（96MB）已从跟踪中移除，禁止再提交
+播放器使用演示.mp4
