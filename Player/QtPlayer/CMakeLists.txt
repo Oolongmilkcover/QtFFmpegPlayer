@@ -50,7 +50,7 @@ qt_add_executable(QtPlayer
 )
 
 # ========================== FFmpeg 配置 ==========================
-set(FFMPEG_PATH "C:/Program Files/ffmpeg/ffmpeg8.1")
+set(FFMPEG_PATH "C:/Program Files/ffmpeg/ffmpeg8.1" CACHE PATH "FFmpeg 安装目录（需含 include/、lib/、bin/），可用 -DFFMPEG_PATH=... 覆盖")
 
 target_include_directories(QtPlayer PRIVATE ${FFMPEG_PATH}/include)
 

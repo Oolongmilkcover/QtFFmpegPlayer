@@ -87,22 +87,49 @@
 ### 3.2 构建
 
 ```bash
-# 1) 改 CMakeLists.txt 里的 FFmpeg 路径
-#    set(FFMPEG_PATH "C:/Program Files/ffmpeg/ffmpeg8.1")
+# 1) 配置（FFMPEG_PATH 有默认值，路径不同就用 -D 覆盖；Qt 用 CMAKE_PREFIX_PATH 指定）
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_PREFIX_PATH="C:/Qt/6.11.0/msvc2022_64" \
+      -DFFMPEG_PATH="C:/Program Files/ffmpeg/ffmpeg8.1"
 
-# 2) 构建
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+# 2) 编译
 cmake --build build --config Release
 
 # 3) 运行
-./build/QtPlayer        # Windows 下是 build/Release/QtPlayer.exe
+./build/Release/QtPlayer.exe     # Linux / macOS 下是 ./build/QtPlayer
 ```
 
-### 3.3 部署（Release 的 exe 拷到别处会报缺 DLL）
+### 3.3 打包给别人用（免安装绿色版）
+
+程序用的是 shared 版 FFmpeg，**单独把 exe 拷走是跑不起来的**，必须把 Qt 与 FFmpeg 的运行库一起带上。
+仓库里的 `scripts/build-release.ps1` 一步完成「Release 构建 → `windeployqt` 收集 Qt 依赖 → 拷 FFmpeg 运行库 → 压 zip」：
+
+```powershell
+# 默认输出 dist\QtPlayer-v2.0-win64\ 并生成同名 zip
+powershell -ExecutionPolicy Bypass -File scripts\build-release.ps1
+
+# 只探测路径与体积预估，不做任何构建
+powershell -ExecutionPolicy Bypass -File scripts\build-release.ps1 -DryRun
+
+# 显式指定 Qt / FFmpeg / 版本号
+powershell -ExecutionPolicy Bypass -File scripts\build-release.ps1 `
+    -QtDir C:\Qt\6.11.0\msvc2022_64 `
+    -FfmpegPath "C:\Program Files\ffmpeg\ffmpeg8.1" `
+    -Version v2.0
+```
+
+跑完直接双击 `dist\QtPlayer-v2.0-win64\QtPlayer.exe` 自测。
+
+> **不要把这个目录提交进仓库。** 实测约 **250 MB**，其中 220 MB 是 FFmpeg 的 DLL
+> （`avcodec-62.dll` 93 MB、`avfilter-11.dll` 90 MB）。二进制无法增量存储，每次重新构建都会往历史里
+> 塞几百 MB 且永远删不掉；这两个文件也已逼近 GitHub 单文件 100 MB 的硬上限。
+> 分发请走 **GitHub Release 附件**：新建 Release → 上传 zip → 用户解压双击即用。
+
+手动打包等价于：
 
 ```bash
-windeployqt QtPlayer.exe
-# 若仍缺，把 FFmpeg bin 目录下的动态库拷到 exe 同级：
+windeployqt --release --no-translations --compiler-runtime QtPlayer.exe
+# 再把 FFmpeg bin 目录下的动态库拷到 exe 同级：
 #   avcodec-*.dll  avformat-*.dll  avutil-*.dll  swresample-*.dll  swscale-*.dll  avfilter-*.dll
 ```
 
@@ -260,6 +287,9 @@ QtFFmpegPlayer/
 ├── README.md
 ├── docs/
 │   └── problems-and-solutions.md    # 开发问题与解决方案（面试复习笔记）
+├── scripts/
+│   └── build-release.ps1            # 一键打包免安装绿色版（构建 + windeployqt + zip）
+├── dist/                            # 打包输出（不入库）
 └── Player/QtPlayer/
     ├── CMakeLists.txt
     ├── main.cpp
