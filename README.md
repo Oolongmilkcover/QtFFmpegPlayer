@@ -119,7 +119,7 @@ powershell -ExecutionPolicy Bypass -File scripts\build-release.ps1 `
 
 跑完直接双击 `dist\QtPlayer-v2.0-win64\QtPlayer.exe` 自测。
 
-> **不要把这个目录提交进仓库。** 实测约 **250 MB**，其中 220 MB 是 FFmpeg 的 DLL
+> 实测约 **250 MB**，其中 220 MB 是 FFmpeg 的 DLL
 > （`avcodec-62.dll` 93 MB、`avfilter-11.dll` 90 MB）。二进制无法增量存储，每次重新构建都会往历史里
 > 塞几百 MB 且永远删不掉；这两个文件也已逼近 GitHub 单文件 100 MB 的硬上限。
 > 分发请走 **GitHub Release 附件**：新建 Release → 上传 zip → 用户解压双击即用。
@@ -139,8 +139,6 @@ windeployqt --release --no-translations --compiler-runtime QtPlayer.exe
 ### 4.1 线程模型
 
 ![线程与数据流模型](pictures/OPlayer模型.png)
-
-我把职责按"谁拥有什么资源"来分：
 
 - **DemuxThread**：唯一持有 `AVFormatContext`，负责读包、分发、seek、逐帧回填；
 - **VideoDecodeThread**：唯一持有视频 `AVCodecContext`，解码后写进未来帧队列；
