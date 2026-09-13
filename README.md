@@ -24,9 +24,9 @@
 - [6. 目录结构](#6-目录结构)
 - [7. 关键常量](#7-关键常量)
 - [8. 性能数据](#8-性能数据)
-- [9. 已知限制与后续规划](#9-已知限制与后续规划)
+- [9. 已知限制](#9-已知限制)
 - [10. 参考资料与延伸阅读](#10-参考资料与延伸阅读)
-- [开发问题与解决方案（面试复习笔记）](docs/problems-and-solutions.md)
+- [开发问题与解决方案](docs/problems-and-solutions.md)
 
 ---
 
@@ -286,7 +286,7 @@ AVPacket → avcodec 解码 → swresample 重采样(S16/48k/2ch)
 QtFFmpegPlayer/
 ├── README.md
 ├── docs/
-│   └── problems-and-solutions.md    # 开发问题与解决方案（面试复习笔记）
+│   └── problems-and-solutions.md    # 开发中踩过的坑与排查过程（附录含后续规划）
 ├── scripts/
 │   └── build-release.ps1            # 一键打包免安装绿色版（构建 + windeployqt + zip）
 ├── dist/                            # 打包输出（不入库）
@@ -332,10 +332,6 @@ QtFFmpegPlayer/
 ---
 
 ## 8. 性能数据
-
-> 下面这些数字我自己测，测完填进来；还没测的位置标了「待填」。
-> 内存类的是**设计上限估算**，用来说明取舍关系，实测以工具采样为准。
-
 ### 8.1 测试环境
 
 | 项目 | 配置 |
@@ -395,9 +391,7 @@ QtFFmpegPlayer/
 
 ---
 
-## 9. 已知限制与后续规划
-
-### 已知限制
+## 9. 已知限制
 
 1. **还是软解**：硬件解码（DXVA2 / D3D11VA / MediaCodec）我还没接，高码率 4K 下 CPU 占用偏高；
 2. **时间轴原点**：进度条用"帧 pts / 容器 duration"算位置，没用 `AVStream::start_time` 归一化，
@@ -407,20 +401,11 @@ QtFFmpegPlayer/
 5. **字幕 / HDR 都没做**：字幕轨、10bit/HDR、以及色彩空间（BT.601/709、limited/full range）都还没处理；
 6. **只验证过 Windows**：代码里没有 Win32 API，移植主要改构建和窗口细节。
 
-### 接下来想做的
-
-- [ ] 硬件解码（D3D11VA → MediaCodec/VAAPI）与零拷贝（Surface / DMA-BUF）
-- [ ] 跨平台构建（CMake 参数化 + Linux 构建 + CI 矩阵）和 **Android 壳**（Surface/EGL + Oboe）
-- [ ] 资源档位与编译期裁剪（队列深度 / 历史深度 / 滤镜开关），输出一张内存–性能实测表
-- [ ] 把第 8 节的性能数据补齐
-- [ ] 单元测试（FrameQueue 状态机、seek 状态机）并接进 CI
-- [ ] 自适应缓冲（网络流弱网）、字幕、HDR / 色彩管理
-
 ---
 
 ## 10. 参考资料与延伸阅读
 
-- [开发问题与解决方案（面试复习笔记）](docs/problems-and-solutions.md)：我开发中真实踩到的问题与排查过程
+- [开发问题与解决方案](docs/problems-and-solutions.md)：开发中真实踩到的问题与排查过程
 - FFmpeg 官方文档：`avformat` / `avcodec` / `avutil`（时间基、`av_seek_frame`、`AVFrame` 引用计数）
 - ffplay（FFmpeg 自带参考播放器）：`frame_queue` 的环形预分配与 `keep_last` 设计
 - mpv issue #4019：关于"逐帧后退为什么慢、以及缓存策略的取舍"
