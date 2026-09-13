@@ -45,8 +45,7 @@
 
 ## 2. 功能特性
 
-> **演示（待补充）**：我打算放一张主界面截图 + 一段 10~15s 的 GIF（逐帧回退 / 倍速 / 滤镜切换）。
-> 素材放 `docs/media/` 或走外链。
+![主界面与按键说明](pictures/OPlayer界面.png)
 
 | 分类 | 功能 | 说明 |
 |---|---|---|
@@ -139,29 +138,7 @@ windeployqt --release --no-translations --compiler-runtime QtPlayer.exe
 
 ### 4.1 线程模型
 
-```text
-              ┌──────────────────────── DemuxThread ────────────────────────┐
-              │  av_read_frame → 按 stream_index 分发                        │
-              │  异步 seek / 逐帧回填（唯一持有 AVFormatContext）             │
-              └───────┬──────────────────────────────────────┬──────────────┘
-              视频包  │                                      │ 音频包
-                      ▼                                      ▼
-           ┌────────────────────┐                  ┌─────────────────────┐
-           │ VideoDecodeThread  │                  │ AudioThread          │
-           │ 解码 → 未来帧队列    │                  │ 解码线程 → 音频帧队列  │
-           │ (own AVCodecContext)│                 │ 播放线程 → QAudioSink │
-           └─────────┬──────────┘                  └──────────┬──────────┘
-                     ▼                                        ▼
-           ┌────────────────────┐                  ┌─────────────────────┐
-           │ VideoRenderThread  │◀───── synpts ────│  音频时钟 (pts)       │
-           │ 消费帧 / 计时 / 丢帧 │                  │ = 写入pts − 未播时长  │
-           └─────────┬──────────┘                  └─────────────────────┘
-                     ▼  Qt::QueuedConnection
-           ┌────────────────────┐
-           │    VideoWidget     │  QOpenGLWidget + GLSL（YUV420P）
-           │ 丢帧邮箱 + 零拷贝    │
-           └────────────────────┘
-```
+![线程与数据流模型](pictures/OPlayer模型.png)
 
 我把职责按"谁拥有什么资源"来分：
 
@@ -285,6 +262,9 @@ AVPacket → avcodec 解码 → swresample 重采样(S16/48k/2ch)
 ```text
 QtFFmpegPlayer/
 ├── README.md
+├── pictures/
+│   ├── OPlayer界面.png              # 主界面与按键说明
+│   └── OPlayer模型.png              # 线程与数据流模型
 ├── docs/
 │   └── problems-and-solutions.md    # 开发中踩过的坑与排查过程（附录含后续规划）
 ├── scripts/
