@@ -1,0 +1,12 @@
+计时器五分钟后打印且确认程序无问题
+
+shown frames: 36008
+lose frames: 0
+shown frames: 36010
+lose frames: 0
+shown frames: 36012
+lose frames: 0
+shown frames: 36014
+lose frames: 0
+shown frames: 36016
+lose frames: 0

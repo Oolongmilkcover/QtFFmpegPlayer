@@ -1,0 +1,390 @@
+日志输出有复用 主要看ms就行了！！
+
+seek 延迟 随机 seek 50 次，打点"发出请求 → 目标帧上屏"（requestSeekMs → repaintPts 完成）{
+这是第 1 次seek
+[PERF] setPerfStartNs = 200  ns
+QIODevice::seek (QIODevice): Cannot call seek on a sequential device
+[PERF] ===== FIRST VIDEO FRAME RENDERED cost = "1.90" ms
+atempo filter ready, speed = 1
+这是第 2 次seek
+[PERF] setPerfStartNs = 2624285800  ns
+[PERF] ===== FIRST VIDEO FRAME RENDERED cost = "3.39" ms
+QIODevice::seek (QIODevice): Cannot call seek on a sequential device
+atempo filter ready, speed = 1
+这是第 3 次seek
+[PERF] setPerfStartNs = 3465299000  ns
+[PERF] ===== FIRST VIDEO FRAME RENDERED cost = "9.39" ms
+QIODevice::seek (QIODevice): Cannot call seek on a sequential device
+atempo filter ready, speed = 1
+这是第 4 次seek
+[PERF] setPerfStartNs = 4050751300  ns
+QIODevice::seek (QIODevice): Cannot call seek on a sequential device
+[PERF] ===== FIRST VIDEO FRAME RENDERED cost = "4.21" ms
+atempo filter ready, speed = 1
+这是第 5 次seek
+[PERF] setPerfStartNs = 5127775400  ns
+QIODevice::seek (QIODevice): Cannot call seek on a sequential device
+[PERF] ===== FIRST VIDEO FRAME RENDERED cost = "11.38" ms
+atempo filter ready, speed = 1
+这是第 6 次seek
+[PERF] setPerfStartNs = 6843170800  ns
+[PERF] ===== FIRST VIDEO FRAME RENDERED cost = "7.54" ms
+QIODevice::seek (QIODevice): Cannot call seek on a sequential device
+atempo filter ready, speed = 1
+这是第 7 次seek
+[PERF] setPerfStartNs = 8082292600  ns
+QIODevice::seek (QIODevice): Cannot call seek on a sequential device
+[PERF] ===== FIRST VIDEO FRAME RENDERED cost = "42.91" ms
+atempo filter ready, speed = 1
+这是第 8 次seek
+[PERF] setPerfStartNs = 9191086700  ns
+QIODevice::seek (QIODevice): Cannot call seek on a sequential device
+[PERF] ===== FIRST VIDEO FRAME RENDERED cost = "3.47" ms
+atempo filter ready, speed = 1
+这是第 9 次seek
+[PERF] setPerfStartNs = 10354441900  ns
+[PERF] ===== FIRST VIDEO FRAME RENDERED cost = "9.27" ms
+QIODevice::seek (QIODevice): Cannot call seek on a sequential device
+atempo filter ready, speed = 1
+这是第 10 次seek
+[PERF] setPerfStartNs = 11733020000  ns
+[PERF] ===== FIRST VIDEO FRAME RENDERED cost = "9.89" ms
+QIODevice::seek (QIODevice): Cannot call seek on a sequential device
+atempo filter ready, speed = 1
+这是第 11 次seek
+[PERF] setPerfStartNs = 12809091700  ns
+[PERF] ===== FIRST VIDEO FRAME RENDERED cost = "3.61" ms
+QIODevice::seek (QIODevice): Cannot call seek on a sequential device
+atempo filter ready, speed = 1
+这是第 12 次seek
+[PERF] setPerfStartNs = 14019295300  ns
+[PERF] ===== FIRST VIDEO FRAME RENDERED cost = "3.39" ms
+QIODevice::seek (QIODevice): Cannot call seek on a sequential device
+atempo filter ready, speed = 1
+这是第 13 次seek
+[PERF] setPerfStartNs = 15188897600  ns
+QIODevice::seek (QIODevice): Cannot call seek on a sequential device
+[PERF] ===== FIRST VIDEO FRAME RENDERED cost = "101.59" ms
+atempo filter ready, speed = 1
+这是第 14 次seek
+[PERF] setPerfStartNs = 16723017500  ns
+QIODevice::seek (QIODevice): Cannot call seek on a sequential device
+[PERF] ===== FIRST VIDEO FRAME RENDERED cost = "126.80" ms
+atempo filter ready, speed = 1
+这是第 15 次seek
+[PERF] setPerfStartNs = 18145024000  ns
+QIODevice::seek (QIODevice): Cannot call seek on a sequential device
+[PERF] ===== FIRST VIDEO FRAME RENDERED cost = "111.85" ms
+atempo filter ready, speed = 1
+这是第 16 次seek
+[PERF] setPerfStartNs = 19266909200  ns
+QIODevice::seek (QIODevice): Cannot call seek on a sequential device
+[PERF] ===== FIRST VIDEO FRAME RENDERED cost = "163.11" ms
+atempo filter ready, speed = 1
+这是第 17 次seek
+[PERF] setPerfStartNs = 20392909400  ns
+[PERF] ===== FIRST VIDEO FRAME RENDERED cost = "1.13" ms
+QIODevice::seek (QIODevice): Cannot call seek on a sequential device
+atempo filter ready, speed = 1
+这是第 18 次seek
+[PERF] setPerfStartNs = 21633542900  ns
+[PERF] ===== FIRST VIDEO FRAME RENDERED cost = "8.36" ms
+QIODevice::seek (QIODevice): Cannot call seek on a sequential device
+atempo filter ready, speed = 1
+这是第 19 次seek
+[PERF] setPerfStartNs = 22612852400  ns
+QIODevice::seek (QIODevice): Cannot call seek on a sequential device
+[PERF] ===== FIRST VIDEO FRAME RENDERED cost = "143.23" ms
+atempo filter ready, speed = 1
+这是第 20 次seek
+[PERF] setPerfStartNs = 23845836200  ns
+QIODevice::seek (QIODevice): Cannot call seek on a sequential device
+[PERF] ===== FIRST VIDEO FRAME RENDERED cost = "12.43" ms
+atempo filter ready, speed = 1
+这是第 21 次seek
+[PERF] setPerfStartNs = 25158987200  ns
+[PERF] ===== FIRST VIDEO FRAME RENDERED cost = "7.70" ms
+QIODevice::seek (QIODevice): Cannot call seek on a sequential device
+atempo filter ready, speed = 1
+这是第 22 次seek
+[PERF] setPerfStartNs = 26095102300  ns
+QIODevice::seek (QIODevice): Cannot call seek on a sequential device
+[PERF] ===== FIRST VIDEO FRAME RENDERED cost = "3.80" ms
+atempo filter ready, speed = 1
+这是第 23 次seek
+[PERF] setPerfStartNs = 27309753900  ns
+QIODevice::seek (QIODevice): Cannot call seek on a sequential device
+[PERF] ===== FIRST VIDEO FRAME RENDERED cost = "151.33" ms
+atempo filter ready, speed = 1
+这是第 24 次seek
+[PERF] setPerfStartNs = 28423766000  ns
+[PERF] ===== FIRST VIDEO FRAME RENDERED cost = "9.82" ms
+QIODevice::seek (QIODevice): Cannot call seek on a sequential device
+atempo filter ready, speed = 1
+这是第 25 次seek
+[PERF] setPerfStartNs = 29723709300  ns
+QIODevice::seek (QIODevice): Cannot call seek on a sequential device
+[PERF] ===== FIRST VIDEO FRAME RENDERED cost = "45.11" ms
+atempo filter ready, speed = 1
+这是第 26 次seek
+[PERF] setPerfStartNs = 30722737500  ns
+[PERF] ===== FIRST VIDEO FRAME RENDERED cost = "8.10" ms
+QIODevice::seek (QIODevice): Cannot call seek on a sequential device
+atempo filter ready, speed = 1
+这是第 27 次seek
+[PERF] setPerfStartNs = 31995669200  ns
+[PERF] ===== FIRST VIDEO FRAME RENDERED cost = "10.08" ms
+QIODevice::seek (QIODevice): Cannot call seek on a sequential device
+atempo filter ready, speed = 1
+这是第 28 次seek
+[PERF] setPerfStartNs = 33059140000  ns
+QIODevice::seek (QIODevice): Cannot call seek on a sequential device
+[PERF] ===== FIRST VIDEO FRAME RENDERED cost = "160.25" ms
+atempo filter ready, speed = 1
+这是第 29 次seek
+[PERF] setPerfStartNs = 34161598800  ns
+[PERF] ===== FIRST VIDEO FRAME RENDERED cost = "6.09" ms
+QIODevice::seek (QIODevice): Cannot call seek on a sequential device
+atempo filter ready, speed = 1
+这是第 30 次seek
+[PERF] setPerfStartNs = 35221534400  ns
+[PERF] ===== FIRST VIDEO FRAME RENDERED cost = "12.54" ms
+QIODevice::seek (QIODevice): Cannot call seek on a sequential device
+atempo filter ready, speed = 1
+这是第 31 次seek
+[PERF] setPerfStartNs = 36185764400  ns
+[PERF] ===== FIRST VIDEO FRAME RENDERED cost = "9.93" ms
+QIODevice::seek (QIODevice): Cannot call seek on a sequential device
+atempo filter ready, speed = 1
+这是第 32 次seek
+[PERF] setPerfStartNs = 37291597100  ns
+QIODevice::seek (QIODevice): Cannot call seek on a sequential device
+[PERF] ===== FIRST VIDEO FRAME RENDERED cost = "125.98" ms
+atempo filter ready, speed = 1
+这是第 33 次seek
+[PERF] setPerfStartNs = 39281495200  ns
+QIODevice::seek (QIODevice): Cannot call seek on a sequential device
+[PERF] ===== FIRST VIDEO FRAME RENDERED cost = "187.32" ms
+atempo filter ready, speed = 1
+这是第 34 次seek
+[PERF] setPerfStartNs = 40907558400  ns
+QIODevice::seek (QIODevice): Cannot call seek on a sequential device
+[PERF] ===== FIRST VIDEO FRAME RENDERED cost = "95.16" ms
+atempo filter ready, speed = 1
+这是第 35 次seek
+[PERF] setPerfStartNs = 41977568600  ns
+[PERF] ===== FIRST VIDEO FRAME RENDERED cost = "3.17" ms
+QIODevice::seek (QIODevice): Cannot call seek on a sequential device
+atempo filter ready, speed = 1
+这是第 36 次seek
+[PERF] setPerfStartNs = 43338985700  ns
+[PERF] ===== FIRST VIDEO FRAME RENDERED cost = "3.91" ms
+QIODevice::seek (QIODevice): Cannot call seek on a sequential device
+atempo filter ready, speed = 1
+这是第 37 次seek
+[PERF] setPerfStartNs = 45131280100  ns
+[PERF] ===== FIRST VIDEO FRAME RENDERED cost = "9.42" ms
+QIODevice::seek (QIODevice): Cannot call seek on a sequential device
+atempo filter ready, speed = 1
+这是第 38 次seek
+[PERF] setPerfStartNs = 46301384400  ns
+[PERF] ===== FIRST VIDEO FRAME RENDERED cost = "3.64" ms
+QIODevice::seek (QIODevice): Cannot call seek on a sequential device
+atempo filter ready, speed = 1
+这是第 39 次seek
+[PERF] setPerfStartNs = 47334542200  ns
+[PERF] ===== FIRST VIDEO FRAME RENDERED cost = "6.16" ms
+QIODevice::seek (QIODevice): Cannot call seek on a sequential device
+atempo filter ready, speed = 1
+这是第 40 次seek
+[PERF] setPerfStartNs = 48404367700  ns
+QIODevice::seek (QIODevice): Cannot call seek on a sequential device
+[PERF] ===== FIRST VIDEO FRAME RENDERED cost = "179.12" ms
+atempo filter ready, speed = 1
+这是第 41 次seek
+[PERF] setPerfStartNs = 49873811200  ns
+[PERF] ===== FIRST VIDEO FRAME RENDERED cost = "3.89" ms
+QIODevice::seek (QIODevice): Cannot call seek on a sequential device
+atempo filter ready, speed = 1
+这是第 42 次seek
+[PERF] setPerfStartNs = 50903319100  ns
+QIODevice::seek (QIODevice): Cannot call seek on a sequential device
+[PERF] ===== FIRST VIDEO FRAME RENDERED cost = "43.49" ms
+atempo filter ready, speed = 1
+这是第 43 次seek
+[PERF] setPerfStartNs = 51759323500  ns
+[PERF] ===== FIRST VIDEO FRAME RENDERED cost = "1.05" ms
+QIODevice::seek (QIODevice): Cannot call seek on a sequential device
+atempo filter ready, speed = 1
+这是第 44 次seek
+[PERF] setPerfStartNs = 52697110200  ns
+[PERF] ===== FIRST VIDEO FRAME RENDERED cost = "6.11" ms
+QIODevice::seek (QIODevice): Cannot call seek on a sequential device
+atempo filter ready, speed = 1
+这是第 45 次seek
+[PERF] setPerfStartNs = 53684154700  ns
+QIODevice::seek (QIODevice): Cannot call seek on a sequential device
+[PERF] ===== FIRST VIDEO FRAME RENDERED cost = "3.66" ms
+atempo filter ready, speed = 1
+这是第 46 次seek
+[PERF] setPerfStartNs = 54763112600  ns
+[PERF] ===== FIRST VIDEO FRAME RENDERED cost = "7.21" ms
+QIODevice::seek (QIODevice): Cannot call seek on a sequential device
+atempo filter ready, speed = 1
+这是第 47 次seek
+[PERF] setPerfStartNs = 56212160200  ns
+[PERF] ===== FIRST VIDEO FRAME RENDERED cost = "6.74" ms
+QIODevice::seek (QIODevice): Cannot call seek on a sequential device
+atempo filter ready, speed = 1
+这是第 48 次seek
+[PERF] setPerfStartNs = 57703780800  ns
+[PERF] ===== FIRST VIDEO FRAME RENDERED cost = "6.91" ms
+QIODevice::seek (QIODevice): Cannot call seek on a sequential device
+atempo filter ready, speed = 1
+这是第 49 次seek
+[PERF] setPerfStartNs = 58657240800  ns
+QIODevice::seek (QIODevice): Cannot call seek on a sequential device
+[PERF] ===== FIRST VIDEO FRAME RENDERED cost = "104.02" ms
+atempo filter ready, speed = 1
+这是第 50 次seek
+[PERF] setPerfStartNs = 59598572000  ns
+[PERF] ===== FIRST VIDEO FRAME RENDERED cost = "1.50" ms
+QIODevice::seek (QIODevice): Cannot call seek on a sequential device
+atempo filter ready, speed = 1
+}
+
+下一帧步进耗时	单次 stepForward 请求 → 帧上屏{
+
+[PERF] setPerfStartNs = 4273740400  ns
+[PERF] ===== FIRST VIDEO FRAME RENDERED cost = "3.23" ms
+[PERF] setPerfStartNs = 4769564800  ns
+[PERF] ===== FIRST VIDEO FRAME RENDERED cost = "3.94" ms
+[PERF] setPerfStartNs = 5149935800  ns
+[PERF] ===== FIRST VIDEO FRAME RENDERED cost = "5.30" ms
+[PERF] setPerfStartNs = 5476344400  ns
+[PERF] ===== FIRST VIDEO FRAME RENDERED cost = "4.32" ms
+[PERF] setPerfStartNs = 5831042800  ns
+[PERF] ===== FIRST VIDEO FRAME RENDERED cost = "3.05" ms
+[PERF] setPerfStartNs = 6159598300  ns
+[PERF] ===== FIRST VIDEO FRAME RENDERED cost = "3.58" ms
+[PERF] setPerfStartNs = 6500043900  ns
+[PERF] ===== FIRST VIDEO FRAME RENDERED cost = "2.42" ms
+[PERF] setPerfStartNs = 6859769000  ns
+[PERF] ===== FIRST VIDEO FRAME RENDERED cost = "5.10" ms
+[PERF] setPerfStartNs = 7200429000  ns
+[PERF] ===== FIRST VIDEO FRAME RENDERED cost = "2.93" ms
+
+}
+
+上一帧步进耗时（命中历史）	不触发回填{
+[PERF] setPerfStartNs = 852640100  ns
+[PERF] ===== FIRST VIDEO FRAME RENDERED cost = "1.68" ms
+[PERF] setPerfStartNs = 1960063300  ns
+[PERF] ===== FIRST VIDEO FRAME RENDERED cost = "2.44" ms
+[PERF] setPerfStartNs = 2610468600  ns
+[PERF] ===== FIRST VIDEO FRAME RENDERED cost = "2.62" ms
+[PERF] setPerfStartNs = 3271189100  ns
+[PERF] ===== FIRST VIDEO FRAME RENDERED cost = "5.09" ms
+[PERF] setPerfStartNs = 3981193600  ns
+[PERF] ===== FIRST VIDEO FRAME RENDERED cost = "2.68" ms
+[PERF] setPerfStartNs = 4615072500  ns
+[PERF] ===== FIRST VIDEO FRAME RENDERED cost = "5.45" ms
+[PERF] setPerfStartNs = 5273414100  ns
+[PERF] ===== FIRST VIDEO FRAME RENDERED cost = "5.84" ms
+[PERF] setPerfStartNs = 5874212500  ns
+[PERF] ===== FIRST VIDEO FRAME RENDERED cost = "1.63" ms
+[PERF] setPerfStartNs = 6399246400  ns
+[PERF] ===== FIRST VIDEO FRAME RENDERED cost = "1.48" ms
+[PERF] setPerfStartNs = 6901562100  ns
+[PERF] ===== FIRST VIDEO FRAME RENDERED cost = "4.24" ms
+[PERF] setPerfStartNs = 8730253700  ns
+[PERF] ===== FIRST VIDEO FRAME RENDERED cost = "2.68" ms
+[PERF] setPerfStartNs = 9056228000  ns
+[PERF] ===== FIRST VIDEO FRAME RENDERED cost = "2.53" ms
+
+
+}
+
+回填耗时	打点 doBackwardRefill()：seek + 完整解码到边界 + 前插历史  {
+
+[PERF] doBackwardRefill entry, startNs =  15723636100  ns
+refillBackward: 边界(ms) 472317 回填 16 帧 范围(ms)[ 472050 ~ 472300 ] (到达边界) ok: true
+[PERF] =====  回填耗时 = "143.24" ms
+[PERF] doBackwardRefill entry, startNs =  16247246100  ns
+refillBackward: 边界(ms) 472050 回填 16 帧 范围(ms)[ 471783 ~ 472033 ] (到达边界) ok: true
+[PERF] =====  回填耗时 = "129.70" ms
+[PERF] doBackwardRefill entry, startNs =  16783270300  ns
+refillBackward: 边界(ms) 471783 回填 16 帧 范围(ms)[ 471517 ~ 471767 ] (到达边界) ok: true
+[PERF] =====  回填耗时 = "125.22" ms
+[PERF] doBackwardRefill entry, startNs =  17316962000  ns
+refillBackward: 边界(ms) 471517 回填 16 帧 范围(ms)[ 471250 ~ 471500 ] (到达边界) ok: true
+[PERF] =====  回填耗时 = "113.26" ms
+[PERF] doBackwardRefill entry, startNs =  17835953600  ns
+refillBackward: 边界(ms) 471250 回填 16 帧 范围(ms)[ 470983 ~ 471233 ] (到达边界) ok: true
+[PERF] =====  回填耗时 = "109.29" ms
+[PERF] doBackwardRefill entry, startNs =  18376751100  ns
+refillBackward: 边界(ms) 470983 回填 16 帧 范围(ms)[ 470717 ~ 470967 ] (到达边界) ok: true
+[PERF] =====  回填耗时 = "102.03" ms
+[PERF] doBackwardRefill entry, startNs =  18896699300  ns
+refillBackward: 边界(ms) 470717 回填 16 帧 范围(ms)[ 470450 ~ 470700 ] (到达边界) ok: true
+[PERF] =====  回填耗时 = "86.54" ms
+[PERF] doBackwardRefill entry, startNs =  19428268300  ns
+refillBackward: 边界(ms) 470450 回填 16 帧 范围(ms)[ 470183 ~ 470433 ] (到达边界) ok: true
+[PERF] =====  回填耗时 = "80.69" ms
+[PERF] doBackwardRefill entry, startNs =  19957487700  ns
+refillBackward: 边界(ms) 470183 回填 16 帧 范围(ms)[ 469917 ~ 470167 ] (到达边界) ok: true
+[PERF] =====  回填耗时 = "69.43" ms
+[PERF] doBackwardRefill entry, startNs =  20485909000  ns
+refillBackward: 边界(ms) 469917 回填 16 帧 范围(ms)[ 469650 ~ 469900 ] (到达边界) ok: true
+[PERF] =====  回填耗时 = "61.12" ms
+[PERF] doBackwardRefill entry, startNs =  21010715200  ns
+refillBackward: 边界(ms) 469650 回填 16 帧 范围(ms)[ 469383 ~ 469633 ] (到达边界) ok: true
+[PERF] =====  回填耗时 = "50.82" ms
+[PERF] doBackwardRefill entry, startNs =  21541345600  ns
+refillBackward: 边界(ms) 469383 回填 16 帧 范围(ms)[ 469117 ~ 469367 ] (到达边界) ok: true
+[PERF] =====  回填耗时 = "41.82" ms
+[PERF] doBackwardRefill entry, startNs =  22054159800  ns
+refillBackward: 边界(ms) 469117 回填 16 帧 范围(ms)[ 468850 ~ 469100 ] (到达边界) ok: true
+[PERF] =====  回填耗时 = "35.68" ms
+[PERF] doBackwardRefill entry, startNs =  22594373100  ns
+refillBackward: 边界(ms) 468850 回填 16 帧 范围(ms)[ 468583 ~ 468833 ] (到达边界) ok: true
+[PERF] =====  回填耗时 = "185.78" ms
+[PERF] doBackwardRefill entry, startNs =  23111365500  ns
+refillBackward: 边界(ms) 468583 回填 16 帧 范围(ms)[ 468317 ~ 468567 ] (到达边界) ok: true
+[PERF] =====  回填耗时 = "159.56" ms
+[PERF] doBackwardRefill entry, startNs =  23649964300  ns
+refillBackward: 边界(ms) 468317 回填 16 帧 范围(ms)[ 468050 ~ 468300 ] (到达边界) ok: true
+[PERF] =====  回填耗时 = "145.30" ms
+[PERF] doBackwardRefill entry, startNs =  24179268400  ns
+refillBackward: 边界(ms) 468050 回填 16 帧 范围(ms)[ 467783 ~ 468033 ] (到达边界) ok: true
+[PERF] =====  回填耗时 = "144.65" ms
+}
+
+上一帧端到端（首次跨边界）	按下按键 → 画面更新（含等回填完成） 这里是连续6次回填16帧的耗时{
+
+
+[PERF] setPerfStartNs = 11555347800  ns
+refillBackward: 边界(ms) 765317 回填 16 帧 范围(ms)[ 765050 ~ 765300 ] (到达边界) ok: true
+[PERF] ===== FIRST VIDEO FRAME RENDERED cost = "68.76" ms
+
+[PERF] setPerfStartNs = 14883317000  ns
+refillBackward: 边界(ms) 765050 回填 16 帧 范围(ms)[ 764783 ~ 765033 ] (到达边界) ok: true
+[PERF] ===== FIRST VIDEO FRAME RENDERED cost = "74.33" ms
+
+[PERF] setPerfStartNs = 18245331400  ns
+refillBackward: 边界(ms) 764783 回填 16 帧 范围(ms)[ 764517 ~ 764767 ] (到达边界) ok: true
+[PERF] ===== FIRST VIDEO FRAME RENDERED cost = "112.12" ms
+
+[PERF] setPerfStartNs = 21563331000  ns
+refillBackward: 边界(ms) 764517 回填 16 帧 范围(ms)[ 764250 ~ 764500 ] (到达边界) ok: true
+[PERF] ===== FIRST VIDEO FRAME RENDERED cost = "97.61" ms
+
+[PERF] setPerfStartNs = 24901305200  ns
+refillBackward: 边界(ms) 764250 回填 16 帧 范围(ms)[ 763983 ~ 764233 ] (到达边界) ok: true
+[PERF] ===== FIRST VIDEO FRAME RENDERED cost = "70.62" ms
+
+[PERF] setPerfStartNs = 28263522000  ns
+refillBackward: 边界(ms) 763983 回填 16 帧 范围(ms)[ 763717 ~ 763967 ] (到达边界) ok: true
+[PERF] ===== FIRST VIDEO FRAME RENDERED cost = "57.35" ms
+
+}
