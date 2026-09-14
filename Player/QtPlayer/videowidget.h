@@ -85,4 +85,14 @@ private:
     qint64 m_realDrawCnt = 0;
     qint64 m_realFpsTimer = 0;
 
+
+
+//--------------------------------------------------
+    //这里几个都是测试用的（默认关闭，需要时取消注释）
+    //qint64        m_startNs = 0;
+//public:
+    //std::atomic<bool> m_needNsDiff{false};
+
+    //void setPerfStartNs(qint64 ns);
+//--------------------------------------------------
 };

@@ -5,6 +5,7 @@
 #include<sstream>
 #include<iostream>
 #include<QFile>
+#include "perfclock.h"
 #include <QElapsedTimer>
 extern "C" {
 #include <libavutil/frame.h>
@@ -289,7 +290,7 @@ void VideoWidget::paintGL()
     if(ms >= 1000)
     {
         double realFps = m_realDrawCnt * 1000.0 / ms;
-        qDebug() << "【屏幕真实渲染FPS】" << realFps;
+        //qDebug() << "【屏幕真实渲染FPS】" << realFps;
         timer.restart();
         m_realDrawCnt = 0;
     }
@@ -304,6 +305,18 @@ void VideoWidget::paintGL()
         glClear(GL_COLOR_BUFFER_BIT);
         return;
     }
+
+    // =====================【needNsDiff完成打点】=====================
+    // if(m_needNsDiff.load())
+    // {
+    //     m_needNsDiff.store(false);
+    //     const qint64 nowNs  = perfNowNs();
+    //     const qint64 costNs = nowNs - m_startNs;
+    //     qDebug().nospace()
+    //         << "[PERF] ===== FIRST VIDEO FRAME RENDERED cost = "
+    //         << QString::number(costNs / 1e6, 'f', 2) << " ms";
+    // }
+    // =============================================================
 
     program.bind();
 
@@ -362,3 +375,11 @@ void VideoWidget::resizeGL(int width, int height)
     //glViewport(0,0,width,height);
     mux.unlock();
 }
+
+// 测试用打点（默认关闭；需要时连同 videowidget.h 里的声明一起取消注释）
+//void VideoWidget::setPerfStartNs(qint64 ns)
+//{
+//    m_startNs = ns;
+//    //m_needNsDiff.store(false);
+//    qDebug() << "[PERF] setPerfStartNs =" << ns <<" ns";
+//}

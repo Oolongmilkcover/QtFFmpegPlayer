@@ -303,7 +303,14 @@ void Player::showOrHidePlayList()
 
 void Player::playFile(const QString &path)
 {
+
     if (path.isEmpty()) return;
+
+
+    // 起点：进程内统一的纳秒时间戳
+    //const qint64 startNs = perfNowNs();
+    //qDebug() << "[PERF] playFile entry, startNs = " << startNs <<" ns";
+
     //换文件前先退出逐帧
     exitStepFrame();
     //this->setWindowTitle(path);
@@ -311,6 +318,9 @@ void Player::playFile(const QString &path)
         QMessageBox::information(0, "error", "open file failed!");
         return;
     }
+
+    //ui->video->setPerfStartNs(startNs);
+
     emit setPlayingText(path);
     dt.start();
     this->showNormal();
@@ -493,6 +503,13 @@ void Player::sliderSeek(double pos)
     m_pendingSeekMs = -1;
     //拖动进度条也退出逐帧
     exitStepFrame();
+    // // -----------
+    // static int times = 0;
+    // qDebug()<<"这是第"<<++times<<"次seek";
+    // qint64 startNs = perfNowNs();
+    // ui->video->setPerfStartNs(startNs);
+    // ui->video->m_needNsDiff.store(true);
+    // //-----------
     dt.seek(pos);
 }
 

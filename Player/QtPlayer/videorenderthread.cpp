@@ -40,6 +40,7 @@ void VideoRenderThread::setFps(double fps)
     m_fps = fps;
     m_frameDurationMs = 1000.0 / m_fps / m_speed;
     pts = 0;
+    //qDebug()<<"视频fps:"<<m_fps;
 }
 
 void VideoRenderThread::setPause(bool isPause)
@@ -159,6 +160,12 @@ void VideoRenderThread::renderFrame(Frame* frame)
 
 void VideoRenderThread::run()
 {
+    //-----------
+    //丢帧数统计
+    // static long long loseFrameCount = -1;
+    //读过的总帧数
+    // static long long readenCount = -1;
+    //-----------
 
     qDebug() << "VideoRenderThread running...";
 
@@ -254,6 +261,11 @@ void VideoRenderThread::run()
             continue;
         }
 
+        //-----------
+        // if(readenCount!=-1)
+        //     readenCount++;
+        //-----------
+
         //检查serial
         if(frame->m_serial!=serial){
             m_frameQueue->next();
@@ -267,6 +279,8 @@ void VideoRenderThread::run()
 
         //音画同步
         long long audioPts = synpts.load();
+
+
 
         qint64 nowWall = m_loopTimer.elapsed();
 
@@ -301,6 +315,16 @@ void VideoRenderThread::run()
             continue;
         }
 
+        //-----------
+        // if(readenCount != -1){
+        //     //五分钟的丢帧率
+        //     if(loseTimer.elapsed() >= 5*60*1000 ){
+        //         qDebug()<<"shown frames:" << readenCount;
+        //         qDebug()<<"lose frames:"<< loseFrameCount;
+        //     }
+        //     readenCount++;
+        // }
+        //------------
 
         //视频-音频
         long long diff = videoPts - audioPts;
@@ -311,7 +335,7 @@ void VideoRenderThread::run()
             compensate = qMax<qint64>((diff + SYNC_THRESHOLD) / 2, -m_frameDurationMs);
         }
         qint64 renderStart = m_loopTimer.elapsed();
-        //qDebug()<<"videoPts"<<videoPts<<"audioPts"<<audioPts<<"diff"<<diff;
+        //qDebug()<<"videoPts:"<<videoPts<<",audioPts:"<<audioPts<<",diff:"<<diff;
         //视频超前
         if (diff > SYNC_THRESHOLD || diff < -SYNC_THRESHOLD) //原50
         {
@@ -330,9 +354,25 @@ void VideoRenderThread::run()
             m_frameQueue->next();
             qint64 target = nowWall + m_frameDurationMs - renderCost + compensate;
             sleepUntil(target);
+
+            //-----------
+            //正常播放后再开始统计丢帧率
+            // if(loseFrameCount == -1 && readenCount == -1){
+            //     loseTimer.start();
+            //     qDebug()<<"开始计算5分钟内的丢帧数";
+            //     loseFrameCount = 0;
+            //     readenCount = 1;
+            // }
+            //-----------
+
         }else{
             // 落后音频：丢帧
             //qDebug() << "落后音频：丢帧";
+            //-----------
+            // if(loseFrameCount!=-1){
+            //     loseFrameCount++;
+            // }
+            //-----------
             m_frameQueue->next();
         }
     }

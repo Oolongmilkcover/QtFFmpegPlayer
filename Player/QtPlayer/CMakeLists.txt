@@ -46,6 +46,7 @@ qt_add_executable(QtPlayer
     packetqueue.h packetqueue.cpp
     framequeue.h framequeue.cpp
     videorenderthread.h videorenderthread.cpp
+    perfclock.h
 
 )
 

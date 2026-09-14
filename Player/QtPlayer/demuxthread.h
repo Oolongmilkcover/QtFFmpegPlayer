@@ -7,7 +7,7 @@
 获取：宽、高、帧率、总时长
 Seek 功能 
 */
-
+#include "perfclock.h"
 #include "libavutil/rational.h"
 #include <QSet>
 #include <QThread>

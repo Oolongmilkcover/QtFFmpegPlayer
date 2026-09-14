@@ -1,9 +1,10 @@
 #ifndef PLAYER_H
 #define PLAYER_H
 #include "demuxthread.h"
+#include <QElapsedTimer>
 #include <QListWidgetItem>
 #include <QWidget>
-
+#include "perfclock.h"
 QT_BEGIN_NAMESPACE
 namespace Ui {
 class Player;
@@ -157,5 +158,8 @@ private:
     bool m_stepFrame = false;
 
     double m_speed = 1.0;
+
+
+
 };
 #endif // PLAYER_H

@@ -84,6 +84,8 @@ private:
 
     std::atomic<long long> m_lastFramePts = 0;
     bool m_firstFrame = false;
+
+    // QElapsedTimer loseTimer;
 };
 
 #endif // VIDEORENDERTHREAD_H

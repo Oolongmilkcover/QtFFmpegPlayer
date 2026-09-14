@@ -261,7 +261,6 @@ bool DemuxThread::seek(double pos)
         return false;
     }
     //把比例换成毫秒后统一走 requestSeekMs
-
     return requestSeekMs((long long)(pos * (double)totalMs));
 }
 
@@ -612,6 +611,11 @@ void DemuxThread::doSeek()
 
 void DemuxThread::doBackwardRefill()
 {
+    // //---
+    // const qint64 startNs = perfNowNs();
+    // qDebug() << "[PERF] doBackwardRefill entry, startNs = " << startNs <<" ns";
+    // //----
+
     if(!m_videoDecodeThread){
         return;
     }
@@ -675,10 +679,17 @@ void DemuxThread::doBackwardRefill()
     bool ok = m_videoDecodeThread->refillBackward(boundaryMs, serial, readVideoPkt);
     m_videoDecodeThread->finishRefill(ok);
 
+    // const qint64 endNs  = perfNowNs();
+    // const qint64 costNs = endNs - startNs;
+    // qDebug().nospace()
+    //     << "[PERF] =====  回填耗时 = "
+    //     << QString::number(costNs / 1e6, 'f', 2) << " ms";
+
     //4.回填期间用户退出了逐帧 → 读位置需要重新对齐
     if(!m_isFrameStep.load() && !m_isExit.load() && totalMs > 0){
         requestSeekMs(getVideoPts());
     }
+
 }
 
 void DemuxThread::setDone()
