@@ -150,6 +150,17 @@ bool DemuxThread::openFile(const char* url,VideoWidget* widget)
         //打开音频解码器和处理线程
         if(!m_audioThread->open(m_fmt_ctx->streams[m_audioStream])){
             qDebug() << "音频打开失败，降级为静音播放";
+            /*
+             * open() 是按「解码器 → 重采样 → 声卡 → atempo 滤镜」的顺序初始化的，
+             * 失败点可能落在任意一步之后：例如 atempo 滤镜建失败时，
+             * 声卡其实已经 open 成功了。这里必须显式回收。
+             *
+             * 不能指望后面的 closeAVThread()：它按 m_hasAudio 判断，
+             * 而下面这行就要把 m_hasAudio 置 false，等于让这次半初始化永远不被清理
+             * （要拖到下一次 openFile 或进程退出）。
+             * AudioThread::close() 内部逐项判空、可安全重复调用，所以直接调用即可。
+             */
+            m_audioThread->close();
             m_hasAudio = false;
         }else{
             m_videoDecodeThread->setSynpts(0);
