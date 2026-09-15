@@ -1,4 +1,4 @@
-#include "VideoWidget.h"
+#include "videowidget.h"
 #include <QDebug>
 #include <QTimer>
 #include <QTextStream>

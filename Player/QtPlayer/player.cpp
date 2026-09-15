@@ -10,6 +10,8 @@
 #include <QMimeData>
 #include <QUrl>
 #include <QFileInfo>
+#include <QGuiApplication>   // 只在 Wayland 才需要请系统接管窗口缩放
+#include <QWindow>           // startSystemResize / startSystemMove
 
 //快进/快退的“尾部”去抖窗口：停止按键多久后，把累积的目标补上。
 //配合“前沿”（这一串按键的第一次立即生效）实现 B 站式手感：
@@ -714,6 +716,23 @@ Qt::Edges Player::hitTestEdges(const QPoint &globalPos) const
 
 void Player::beginResize(Qt::Edges edges, const QPoint &globalPos)
 {
+    /*
+     * 只有 Wayland 需要请系统接管缩放：客户端在那里不能自己改顶层窗口几何
+     * （setGeometry 会被合成器忽略，表现就是"边缘拖不动"），只能请求交互式缩放。
+     *
+     * X11 / Windows 保持自绘缩放（和 v2.1 一致）：它们本来就允许客户端改几何，
+     * 而且自绘走正常事件循环；原生缩放是模态循环，期间 Qt 不跑事件循环，
+     * 拖窗口时画面/播放会停住，看起来就是卡顿。
+     * 和 startSystemMove 一样，必须在鼠标按下的处理里同步调用。
+     */
+    if (QGuiApplication::platformName().startsWith(QLatin1String("wayland"))) {
+        QWindow *wh = windowHandle();
+        if (wh && wh->startSystemResize(edges)) {
+            m_isResizing = false;       // 交给合成器，不再走自绘缩放
+            return;
+        }
+    }
+
     m_isResizing  = true;
     m_resizeEdge  = edges;
     m_pressGlobal = globalPos;

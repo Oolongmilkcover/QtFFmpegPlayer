@@ -149,21 +149,19 @@ bool DemuxThread::openFile(const char* url,VideoWidget* widget)
     if (m_hasAudio){
         //打开音频解码器和处理线程
         if(!m_audioThread->open(m_fmt_ctx->streams[m_audioStream])){
-            tmpRet = false;
-            qDebug()<<"m_audioThread->open failed";
+            qDebug() << "音频打开失败，降级为静音播放";
+            m_hasAudio = false;
+        }else{
+            m_videoDecodeThread->setSynpts(0);
         }
-        m_videoDecodeThread->setSynpts(0);
-        m_videoDecodeThread->setHasAudio(true);
-        qDebug()<<"DemuxThread::Open :"<<tmpRet;
-    }else{
-        m_videoDecodeThread->setHasAudio(false);
     }
+    m_videoDecodeThread->setHasAudio(m_hasAudio);
     if(!tmpRet){
         closeAVThread();
     }else{
         isCompleteInit = true;
         setPause(false);
-        qDebug()<<"openFile end";
+        qDebug()<<"openFile success";
     }
     if (m_hasAudio) m_audioTimebase = m_fmt_ctx->streams[m_audioStream]->time_base;
     if (m_hasVideo) m_videoTimebase = m_fmt_ctx->streams[m_videoStream]->time_base;
@@ -697,7 +695,11 @@ void DemuxThread::setDone()
     playDone.store(true);
 }
 
-void DemuxThread::videoCallSeek(int64_t ms)
+// 注意：这里必须和头文件里的声明完全一致（头文件是 long long）。
+// Linux/glibc 下 int64_t 实际是 long，而 Windows/MSVC 下是 long long ——
+// 两边写成不同类型时，这个定义会被当成"新的重载"，GCC 报
+//   error: no declaration matches 'void DemuxThread::videoCallSeek(int64_t)'
+void DemuxThread::videoCallSeek(long long ms)
 {
     seekToMs(ms);
 }

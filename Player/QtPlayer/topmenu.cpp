@@ -2,6 +2,8 @@
 #include "ui_topmenu.h"
 #include <QMouseEvent>
 #include <QFileInfo>
+#include <QGuiApplication>   // 只在 Wayland 才需要请系统接管窗口移动
+#include <QWindow>           // startSystemMove
 
 TopMenu::TopMenu(QWidget *parent)
     : QWidget(parent)
@@ -115,6 +117,24 @@ void TopMenu::mousePressEvent(QMouseEvent *e)
 {
     if (e->button() == Qt::LeftButton)
     {
+        /*
+         * 只有 Wayland 需要请系统接管窗口移动：客户端在那里不能自己 move
+         * 顶层窗口（win->move() 会被合成器忽略），只能请求交互式移动。
+         *
+         * X11 / Windows 保持自绘拖动（和 v2.1 一致）：它们允许客户端自己 move，
+         * 而且自绘走正常事件循环；原生移动是模态循环，期间 Qt 不跑事件循环，
+         * 拖窗口时画面会停住，看起来就是卡顿。
+         * 必须在鼠标按下的处理里同步调用。
+         */
+        if (QGuiApplication::platformName().startsWith(QLatin1String("wayland"))) {
+            QWindow *wh = window()->windowHandle();
+            if (wh && wh->startSystemMove()) {
+                m_isDragging = false;
+                QWidget::mousePressEvent(e);
+                return;
+            }
+        }
+
         m_isDragging = true;
         // 记录鼠标按下点相对顶层窗口左上角的偏移
         m_dragOffset = e->globalPosition().toPoint()
