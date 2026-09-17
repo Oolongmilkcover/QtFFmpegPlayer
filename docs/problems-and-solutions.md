@@ -23,6 +23,7 @@
 - 16. 从工作线程 emit 信号直连到 UI
 - 17. 网络流导致退出卡死（av_read_frame 阻塞）
 - 18~23. Linux 移植（工具链 / 平台约定 / 一个"不是代码问题"的问题）
+- 附. 单测与 CI（工程化）
 - 附. 未来的 core（零 Qt 内核）
 - 附. 移植 Android
 - 附. 后续规划（P0 ~ P4）
@@ -545,6 +546,58 @@ qmake -query QT_VERSION               # 那份 Qt 的版本
 
 ---
 
+## 附. 单测与 CI（工程化）
+
+这一块不是"修 bug"，但它是**敢重构的前提**：逐帧那块是全项目最绕的地方（未来环 + 历史 deque + 游标 + 回填坐标），
+我在那里踩过自死锁、淘汰活锁、时间戳坐标不统一。没有测试，我根本不敢动后面的 `core` 抽离。
+
+**测试程序（`tests/test_framequeue.cpp`）**
+- 它就是一个带 `main()` 的普通可执行文件，不是测试框架：造带真实 buffer 的假 `AVFrame` → 按状态机一步步走 →
+  每处 `CHECK(...)` 断言；跑完打印 `ALL TESTS PASSED`，**没有失败返回 0、有失败返回非 0**
+  （后面这一点是它能被自动化使用的前提）。
+- 覆盖 6 组：前进 / 后退、历史耗尽触发回填、回填后接续、到文件开头、回填失败不重复请求、历史容量与淘汰、清空。
+- 只依赖 `Qt6::Core` + FFmpeg，**不创建窗口、不建 `QApplication`**，所以能在无桌面环境直接跑。
+
+**测试运行器（`ctest`）**
+- `ctest` 是 CMake 自带的，也不是测试框架：用 `add_test(NAME framequeue COMMAND test_framequeue)` 把测试注册进构建系统，
+  之后一条命令跑全部并汇总结果。
+- 最值钱的地方：**有任何一个测试失败，它自己就返回非零退出码** —— 所以 CI 里一行就够，不用自己写脚本汇总。
+- 常用参数：`--test-dir build`、`--output-on-failure`（只在失败时打印该测试的输出）、`-R 名字`（只跑匹配的）、
+  `--repeat until-fail:50`（重复跑，专门抓偶发）、`-j4`（并行）。
+- `set_tests_properties(... ENVIRONMENT "QT_QPA_PLATFORM=offscreen")` 是按**测试**注入环境变量，是防御性的：
+  即使以后有人往测试里加了 QtGui 相关的东西，无桌面环境也不会因为"找不到平台插件"而失败。
+
+**CI（GitHub Actions）**
+- 一句话：每次 push 都有一台**全新的干净机器**替我做「拉代码 → 装依赖 → 从零构建 → 跑测试」，结果直接标在那次提交上。
+- `runs-on: ubuntu-24.04` 那台机器**本身就是无桌面的**（没有桌面会话、没有 GPU，GL 只能软件渲染）——
+  所以我不用自己维护一台无桌面 VM，也不用再手工在 VM 里 apt + cmake + ctest 一遍。
+- 配置就是仓库里的 `.github/workflows/ci.yml`：`on: push / pull_request / workflow_dispatch`
+  （最后一个可以在网页上手动点 Run workflow），job 里是一串 step：checkout → apt 装依赖 → cmake 配置 → 构建 → ctest。
+- **它能保证什么**：干净机器上从零构建 + 单测通过。这次移植我踩的三个编译错误——`ctrlbar.h` 找不到、
+  `int64_t` 签名不匹配、`VideoWidget.h` 大小写——**CI 在第一次 push 就会全报红**。
+- **它不能保证什么**：GUI 画面对不对、拖动跟不跟手、音频响不响、性能好不好。那些只能我在有桌面的机器上看。
+  分工是：**有桌面的机器管"功能与观感"，CI 管"构建与回归"。**
+
+**什么时候才真的需要自己那台无桌面 VM**：测性能（CI runner 的型号和核数不固定、有噪声，测出来的数没意义）、
+长时间稳定性 / 网络流测试（RTSP 挂两小时那种）、以及没有显示器但要跑 GUI（`xvfb-run` + llvmpipe 软件 GL，
+只能验证"不崩"，性能无参考价值）。这些都不在现在的计划里。
+
+**一个和 CI 相关的坑**：ci.yml 里如果直接 `apt install qt6-base-dev`，用的就是**系统 Qt**（24.04 上大概是 6.4~6.6），
+而我本机是自装的 6.11.2 —— 这正是第 22 条那个坑的翻版。要么在 CI 里用 `jurplel/install-qt-action` 装一份固定版本
+（跟本机对齐），要么就得接受"CI 绿、但行为和我本机不一样"。FFmpeg 那一侧继续用 `pkg-config` 就行。
+
+**常用命令**
+
+```bash
+./build/test_framequeue                                        # 直接跑，看逐组进度
+ctest --test-dir build --output-on-failure                     # CI 用的就是这条（MSVC 多配置要加 -C Release）
+ctest --test-dir build -R framequeue --repeat until-fail:50    # 抓偶发
+```
+
+**下一步**：按 P0 补 `seek` 状态机的单测（那块的坑不比逐帧少），注册进同一个 `ctest`。
+
+---
+
 ## 附. 未来的 core（零 Qt 内核）
 
 这是 P2 的主体，先把边界和判据写在这里，做的时候直接往下填。
@@ -600,8 +653,9 @@ qmake -query QT_VERSION               # 那份 Qt 的版本
 > 按「采集 → 编码 → 渲染 → 传输 + 跨平台 SDK」这条链路的先后依赖排序，先做能打通链路的，再做好看的。
 
 **P0 · 先把存量做实（9 月）**
-- [1] 补齐性能数据：首帧 / seek P50·P95 / CPU / 常驻内存 / 2h 长播曲线
+- [ ] 补齐性能数据：首帧 / seek P50·P95 / CPU / 常驻内存 / 2h 长播曲线
 - [ ] FrameQueue 状态机与 seek 状态机单测，接进 CI
+      —— 单测 / ctest / CI 怎么搭的见「附. 单测与 CI（工程化）」
 - [ ] **Linux 构建跑通**：CMake 参数化（FFmpeg 路径、平台条件）+ 用 `QT_QPA_PLATFORM=offscreen` 跑测试 + GitHub Actions 矩阵（跨平台 + CI + 测试一次拿下）
 - [ ] 顺手修：时间轴原点按 `AVStream::start_time` 归一化；VFR 用 `AVFrame::duration`；跨线程 UI 通知改为显式队列投递
 
