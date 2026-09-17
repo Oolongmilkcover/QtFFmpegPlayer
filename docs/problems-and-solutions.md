@@ -22,6 +22,9 @@
 - 15. 每帧 3MB 的中间拷贝完全可以省掉（零拷贝上传）
 - 16. 从工作线程 emit 信号直连到 UI
 - 17. 网络流导致退出卡死（av_read_frame 阻塞）
+- 18~23. Linux 移植（工具链 / 平台约定 / 一个"不是代码问题"的问题）
+- 附. 未来的 core（零 Qt 内核）
+- 附. 移植 Android
 - 附. 后续规划（P0 ~ P4）
 
 ---
@@ -391,12 +394,213 @@ GUI 线程一忙（模态对话框、拖窗口、重绘），事件队列里就�
 
 ---
 
+## 18. Linux 移植：GCC 不会沿"包含链"去找相对路径的头文件
+
+**现象**：Windows 上编得好好的工程，Ubuntu 上第一次 `cmake --build` 就停在这行：
+
+```
+ui_player.h:19:10: fatal error: ctrlbar.h: No such file or directory
+```
+
+**排查**：`ctrlbar.h` 明明就在旁边，`ui_player.h` 也是 uic 生成的，路径看着都对。
+
+**根因**：`ui_player.h` 生成在**构建目录**里，而 `ctrlbar.h` 在**源码目录**里。MSVC 会沿着
+"谁 include 了我"这条链继续往上层找相对路径，GCC 不会 —— 它只认 `-I` 列表和当前文件所在目录。
+
+**解决**：把源码目录显式加进 include 路径：
+
+```cmake
+target_include_directories(QtPlayer PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+```
+
+
+---
+
+## 19. Linux 移植：LP64 下 `int64_t` 不是 `long long`
+
+**现象**：
+
+```
+error: no declaration matches 'void DemuxThread::videoCallSeek(int64_t)'
+```
+
+**根因**：头文件里的槽声明写的是 `long long`，实现里写的是 `int64_t`。Windows（LLP64）上两者是同一个类型，
+Linux（LP64）上 `int64_t` 是 `long` —— 于是 moc 生成的声明和我的实现对不上，签名不同就是两个函数。
+
+**解决**：实现和声明统一成 `long long`（跟 Qt 信号槽签名保持一致）。
+
+**认知点**：跨平台时**别把 `int64_t` 和 `long long` 当同义词**；`long`、`size_t` 的宽度也是同理。
+信号槽的签名更要按 Qt 的类型写，因为它会被 moc 展开成字符串做匹配。
+
+---
+
+## 20. Linux 移植：文件系统区分大小写
+
+**现象**：`#include "VideoWidget.h"` 在 Windows 上能过，Linux 上直接找不到文件（实际文件名是 `videowidget.h`）。
+
+**根因**：Windows 的文件系统不区分大小写，把这类错误**掩盖**了很久；ext4 区分，一次就暴露。
+
+**解决**：统一成实际文件名，顺手把项目里的头文件名规范了一遍。
+
+**认知点**：改文件名/重构之后要重新完整 build 一次，别指望增量编译替你发现这种问题。
+
+---
+
+## 21. Linux 移植：Wayland 下客户端不能自己移动/缩放顶层窗口
+
+**现象**：Linux 上标题栏拖不动、边缘缩放完全没反应。
+
+**根因**：Wayland 的 xdg-shell 里，顶层窗口的位置和大小由**合成器**决定，客户端的 `move()` / `setGeometry()`
+会被忽略（或者回弹）；X11 时代那套"自己算坐标自己 setGeometry"不成立了。
+
+**解决**：在**鼠标按下事件的处理里同步调用**：
+
+```cpp
+window()->windowHandle()->startSystemMove();          // 标题栏拖动
+windowHandle()->startSystemResize(edges);             // 边缘/四角缩放
+```
+
+Qt 会分别走 Wayland 的 `xdg_toplevel.move/resize`、X11 的 `_NET_WM_MOVERESIZE`、Windows 的
+`WM_SYSCOMMAND(SC_DRAGMOVE / SC_SIZE...)`。返回 false 时再回退到自绘实现。
+
+**这里我踩了第二个坑**：原生移动/缩放是**模态循环**，期间 Qt 不跑事件循环 —— 所有"投递"的事件
+（解码、渲染、重绘）都被压到松手之后才处理，于是**边拖窗口边播会明显卡顿**（v2.1 是自绘，走正常事件循环，所以不卡）。
+最后我改成：**只有 Wayland 用系统接管**（那里确实没有别的办法），X11 / Windows 一律保留自绘。
+
+**认知点**：跨平台不是"哪个 API 能用就用哪个"，而是"**这个平台上有没有别的选择**"。
+
+---
+
+## 22. Linux 移植：显示控件不对，最后发现是"编译用的 Qt 不是要跑的那个"
+
+**现象**：Ubuntu 上画面区域不对 —— 显示控件和 topMenu / ctrlbar 之间总留一段距离，画面像是被截掉一条；
+同一份代码在 Windows 上完全正常。
+
+**排查**：我怀疑过一圈，并且逐条验证掉了：
+- 布局的高度公式（`-12` 那个常数）→ 对当前 `player.ui` 跑 uic，生成的是
+  `setContentsMargins(6, 6, 6, 6)`，是 `.ui` **显式**写的，两平台必然一样；
+- 两个弹簧（`aboveSpacer` / `belowSpacer`）在 Linux 上没生效 → 把窗口拉到接近 16:9 时缝会自己消失，
+  而且上下留白的比例（458 / 382 ≈ 344 / 326）正好等于两个弹簧的 `sizeHint` 比，说明它们**是**生效的；
+- 构造函数里栏高拿到的是布局前的默认值 → 打印出来是 `topMenu=50 ctrlbar=56`（`.ui` 给两个栏都设了
+  min == max，`setMinimumSize()` 会立刻把几何钳到最小值），所以第一次 `resizeEvent` 拿到的就是真值；
+- `QDockWidget` 的 title bar 算进了宽度 → 它默认 `hide()`，隐藏控件不参与布局，而且 title bar 是横的，
+  只会撑高 dock 自己。
+
+**根因**：**我编译时用的 Qt 不是我以为的那一个。**之前是
+
+```bash
+cmake .. -DCMAKE_PREFIX_PATH=/usr/lib/qt6                      # 系统自带的那份 Qt
+```
+
+现在改成自己装的：
+
+```bash
+cmake -DCMAKE_PREFIX_PATH=/home/lcy/Qt/6.11.2/gcc_64/lib/cmake/Qt6 ..
+```
+
+系统 Qt 和自装 Qt 的版本、平台插件、渲染后端都不一样，混着用就会出现"代码看着没问题、行为就是不对"的现象，
+而且报错不会指向真正的方向。
+
+**解决**：构建时显式指向要用的那一份 Qt；这类问题的第一步是**确认版本**，不是读代码。可以互相印证：
+
+```bash
+ldd ./QtPlayer | grep -i qt6          # 运行时到底链的是哪份库
+cmake -LA -N . | grep Qt6_DIR         # 配置时找到的是哪份 Qt
+qmake -query QT_VERSION               # 那份 Qt 的版本
+```
+
+**认知点**：**先确认"我到底在跑哪个 Qt"，再怀疑自己的代码。**我把这一圈"看着都合理的怀疑"全部排除掉，
+才发现问题根本不在代码里。
+
+---
+
+## 23. Linux 移植：打开文件后崩溃在 QtMultimedia 音频端点（决定先放着）
+
+**现象**：换成正确的 Qt 之后，Linux 上重新打开文件依旧会崩溃（Qt Creator 弹 `SIGSEGV`）。
+
+**栈（这条栈非常关键）**：
+
+```
+1  QPlatformAudioEndpointBase::updateStreamIdle(bool, QPlatformAudioEndpointBase::StreamType)
+2  ??
+3  QObject::event(QEvent *)
+4  QApplicationPrivate::notify_helper(QObject *, QEvent *)
+5  QCoreApplication::notifyInternal2(QObject *, QEvent *)
+6  QCoreApplicationPrivate::sendPostedEvents(QObject *, int, QThreadData *)
+...
+11 QEventDispatcherGlib::processEvents(...)
+12 QEventLoop::exec(...)
+13 QCoreApplication::exec()
+14 main                                            main.cpp:10
+```
+
+**目前的判断**：崩溃点**根本不在视频/GL 那条路上**，而是在 **QtMultimedia 的音频端点**里，
+并且是**通过投递事件在 GUI 线程里执行时**崩的（`sendPostedEvents` → `QObject::event`）。
+也就是很可能是音频 sink 的生命周期和我们 seek / 暂停的调用时序撞上了。
+
+**决定：先不修。** 等把 `core` 抽出来、音频输出换成我们自己的 `platform` 层（`IAudioSink`）之后再看 ——
+那时候这条路径上的 Qt 代码会少一大截，问题要么自己消失，要么变得能定位。
+
+**认知点**：**崩溃栈告诉你的第一件事是"别在错的地方找"。** 我一开始一直在视频/GL 里翻，实际一行都不在那儿。
+
+---
+
+## 附. 未来的 core（零 Qt 内核）
+
+这是 P2 的主体，先把边界和判据写在这里，做的时候直接往下填。
+
+**目标**：demux / decode / 帧队列 / 音画同步这些**逻辑**完全不依赖 Qt，只用 C++ 标准库 + FFmpeg；
+线程、窗口、GL、音频设备这些**平台相关**的东西收进 `platform` 层，对外只暴露 `api` 层的稳定接口。
+
+**判据（可以客观检查，不靠感觉）**：`core/` 目录下 grep 不到任何 `#include <Q...>`，也不链接 Qt 的库。
+
+**现在的耦合现状（起步点）**：
+
+| 文件 | 依赖的 Qt |
+| --- | --- |
+| `audiothread.h` | 零 Qt 头（已经是"纯"的） |
+| `framequeue.h` | 只用了 `QObject`（其实并不需要） |
+| `demuxthread.h` | `QThread` + `QSet` |
+| `decodethread.h` / `videorenderthread.h` | `QThread`（+ `QElapsedTimer`） |
+| `videodecodethread.h` / `audioplayer.h` | `QObject` |
+| `perfclock.h` | `QtGlobal` / `QDebug`（只是打日志） |
+
+**要替换的点**：
+- 线程壳：`QThread` → `std::thread` + 自己的停止/唤醒原语（`std::condition_variable`）
+- 容器：`QSet` → `std::unordered_set`
+- 时钟与日志：`QElapsedTimer` → `std::chrono`；`qDebug` → 自己的日志回调
+- 跨线程通知：从"依赖 AutoConnection 的隐式判断"改成**显式队列投递**（问题 16 那条的落地）
+- 时间基准：统一到一个 `steady_clock` 纳秒源（`perfclock.h` 已经是这个方向）
+
+**推进顺序**：先拿已经有单测的 `framequeue` / seek 状态机开刀 → 再换 `demuxthread` 的线程壳 →
+最后才是渲染和音频的 `platform` 后端。
+
+---
+
+## 附. 移植 Android
+
+寒假集中做（P3）。先把要过的关记下来，免得到时候从零查。
+
+**目标**：NDK 交叉编译 `core`，写 Java/Kotlin 壳 + JNI，画面走 `Surface` / EGL，音频走 `Oboe`，
+解码接 `MediaCodec`；先让最简单的 video + audio 播起来，再谈其他。
+
+**预判的关卡**：
+- **构建**：`core` 必须真的零 Qt，否则 NDK 里编不过；用 `android.toolchain.cmake`，只编 `core` + JNI 胶水
+- **渲染**：`QOpenGLWidget` 在 Android 上不存在，要 `ANativeWindow` + EGL；现在这套三平面 `GL_RED`
+  上传可以直接复用，但外部纹理（`SurfaceTexture` / `GL_OES_EGL_image_external`）要另开一条路
+- **音频**：`QAudioSink` → `Oboe`（AAudio / OpenSL ES），还要处理采样率切换和低延迟模式
+- **硬解**：`MediaCodec` 输出到 `Surface`，跟现在软解的 YUV 上传是两条路，需要在 `platform` 层做后端切换
+- **生命周期**：Android 的 pause / resume / 旋转要重新映射成"暂停 / 继续 / 重建 Surface"
+- **验证顺序**：先用 `adb shell` + 日志确认时序对不对，再谈真机性能
+
+---
+
 ## 附. 后续规划
 
 > 按「采集 → 编码 → 渲染 → 传输 + 跨平台 SDK」这条链路的先后依赖排序，先做能打通链路的，再做好看的。
 
 **P0 · 先把存量做实（9 月）**
-- [ ] 补齐性能数据：首帧 / seek P50·P95 / CPU / 常驻内存 / 2h 长播曲线
+- [1] 补齐性能数据：首帧 / seek P50·P95 / CPU / 常驻内存 / 2h 长播曲线
 - [ ] FrameQueue 状态机与 seek 状态机单测，接进 CI
 - [ ] **Linux 构建跑通**：CMake 参数化（FFmpeg 路径、平台条件）+ 用 `QT_QPA_PLATFORM=offscreen` 跑测试 + GitHub Actions 矩阵（跨平台 + CI + 测试一次拿下）
 - [ ] 顺手修：时间轴原点按 `AVStream::start_time` 归一化；VFR 用 `AVFrame::duration`；跨线程 UI 通知改为显式队列投递
