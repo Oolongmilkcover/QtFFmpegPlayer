@@ -99,6 +99,22 @@ cmake --build build --config Release
 ./build/Release/QtPlayer.exe     # Linux / macOS 下是 ./build/QtPlayer
 ```
 
+Linux（Ubuntu 24.04）等价流程：
+
+```bash
+sudo apt install -y build-essential cmake ninja-build libavcodec-dev libavformat-dev \
+     libavutil-dev libswscale-dev libswresample-dev libavfilter-dev
+
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_PREFIX_PATH=/home/lcy/Qt/6.11.2/gcc_64/lib/cmake/Qt6   # ← 必须指向要跑的那份 Qt
+cmake --build build -j
+./build/QtPlayer
+```
+
+> **别指向系统 Qt**（`-DCMAKE_PREFIX_PATH=/usr/lib/qt6`）。系统 Qt 与自装 Qt 的版本、平台插件、
+> 渲染后端都不一样，混用会出现"代码看着没问题、行为就是不对"，而且报错不会指向真正的方向 ——
+> 我就是这么栽的，排查过程记在问题文档第 22 条。
+
 ### 3.3 打包给别人用（免安装绿色版）
 
 程序用的是 shared 版 FFmpeg，**单独把 exe 拷走是跑不起来的**，必须把 Qt 与 FFmpeg 的运行库一起带上。
@@ -132,6 +148,23 @@ windeployqt --release --no-translations --compiler-runtime QtPlayer.exe
 # 再把 FFmpeg bin 目录下的动态库拷到 exe 同级：
 #   avcodec-*.dll  avformat-*.dll  avutil-*.dll  swresample-*.dll  swscale-*.dll  avfilter-*.dll
 ```
+
+### 3.4 Linux 支持（Ubuntu 24.04，已跑通）
+
+- **状态**：Windows 与 Ubuntu 24.04 都能构建、运行、播放；逐帧 / seek / 滤镜在 Linux 上回归过一轮。
+- **无桌面环境（CI / 无桌面 VM）**：单测走 offscreen 平台，不需要 X / Wayland：
+
+  ```bash
+  QT_QPA_PLATFORM=offscreen ctest --test-dir build --output-on-failure
+  ```
+
+- **已知问题**：
+  1. 偶发**打开文件时崩溃**（SIGSEGV），栈落在 QtMultimedia 的音频端点
+     （`QPlatformAudioEndpointBase::updateStreamIdle` ← `QObject::event` ← `sendPostedEvents`），
+     不在视频 / GL 那条路上。**暂时搁置**：等 `core` 抽出来、音频换成自己的 `IAudioSink` 再处理。
+  2. Linux 侧还没有性能数据（§8 的数据都是 Windows 采的）。
+- **踩坑记录**：工具链、平台约定、以及那个"不是代码问题"的问题，都记在
+  [开发问题与解决方案](docs/problems-and-solutions.md) 第 18 ~ 23 条。
 
 ---
 
@@ -420,7 +453,8 @@ QtFFmpegPlayer/
 3. **VFR（可变帧率）**：回填跨度还是按 `avg_frame_rate` 估的，VFR 下不够准（可以用 `AVFrame::duration` 改进）；
 4. **跨线程 UI 通知**：还有个别信号可能在 demux 线程发射（问题文档第 16 条）；
 5. **字幕 / HDR 都没做**：字幕轨、10bit/HDR、以及色彩空间（BT.601/709、limited/full range）都还没处理；
-6. **只验证过 Windows**：代码里没有 Win32 API，移植主要改构建和窗口细节。
+6. **平台验证**：Windows 与 Ubuntu 24.04 都已跑通；Linux 上仍有一个"打开文件偶发崩溃"
+   （QtMultimedia 音频端点，见 3.4 与问题文档第 23 条），且 Linux 侧性能数据尚未采集。
 
 ---
 

@@ -613,11 +613,13 @@ qmake -query QT_VERSION               # 那份 Qt 的版本
 
 **P2 · 引擎 SDK 化 + 硬解（12 月 ~ 1 月）**
 - [ ] 内核与 Qt 解耦：`core`（零 Qt 依赖）/ `platform`（IAudioSink、IRenderTarget、时钟）/ `api`（稳定的 C 接口）
+      —— 边界、现状与推进顺序先写在「附. 未来的 core（零 Qt 内核）」里
 - [ ] 硬件解码 D3D11VA，统计开启前后 CPU 与内存
 - [ ] 零拷贝通路：解码帧直接进 GPU（桌面 SharedTexture → 移动 Surface / DMA-BUF）
 
 **P3 · 移动端落地（寒假集中攻坚）**
 - [ ] **Android 壳**：NDK 交叉编译 core + JNI + Surface/EGL + Oboe，真机跑通；解码接 MediaCodec
+      —— 要过的关先列在「附. 移植 Android」里
 
 **P4 · 能力补强（2 ~ 3 月）**
 - [ ] 开源贡献：给 FFmpeg 文档/示例或某个音视频小库提 1 个 PR
