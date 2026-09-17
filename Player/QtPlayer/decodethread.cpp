@@ -138,6 +138,12 @@ void DecodeThread::clear()
     if (m_frameQue) m_frameQue->clear();
 }
 
+void DecodeThread::abortQueues()
+{
+    if (m_pktQue)   m_pktQue->abort();
+    if (m_frameQue) m_frameQue->abort();
+}
+
 
 
 

@@ -49,6 +49,16 @@ protected:
 private:
     std::mutex mux;
 
+    /*
+     * 创建 Y/U/V 三张纹理（调用者必须持有 mux 且上下文已 current）。
+     * Init() 和 initializeGL() 都会用到：前者是正常换台路径，
+     * 后者用于"Init 时上下文还没就绪"的补偿。
+     */
+    void createTextures();
+
+    //Init() 时上下文没就绪 → 纹理没建成，等 initializeGL() 里补
+    bool m_needTextures = false;
+
     //shader程序
     QOpenGLShaderProgram program;
 

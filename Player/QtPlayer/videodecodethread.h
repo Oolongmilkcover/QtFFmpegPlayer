@@ -47,6 +47,13 @@ public:
     //设置“还有视频未播放”
     void setLastSome(bool lastSome);
 
+    /*
+     * 换台/关闭时清掉上一轮遗留的"尾帧/播完"标志。
+     * 必须在线程 join 之后调用（渲染线程在尾帧阶段会重新置位），
+     * 否则新文件会被当成"已播完"，立刻 seek(0.0)/切下一集。
+     */
+    void resetPlayState();
+
     long long getVideoRenderPts();
 
     //设置fps
@@ -65,6 +72,16 @@ public:
 
     // 重启解码线程
     void restart();
+
+    /*
+     * 清 FrameQueue 前后用来"停稳消费者"的一对函数（成对使用）：
+     *   parkRenderer()   = 停渲染线程并 join（内部会 abort 帧队列），
+     *                      保证此后没有线程再持有队列里的裸 Frame*；
+     *   unparkRenderer() = 清掉 abort 标志，把渲染线程重新拉起来。
+     * 只 park 不 unpark 会一直没有画面。
+     */
+    void parkRenderer();
+    void unparkRenderer();
 
     // ==================== 逐帧 ====================
     // 请求逐帧：delta = +1 下一帧，-1 上一帧

@@ -40,6 +40,13 @@ public:
     AVFrame* recv();
     //调用队列的clear
     void clear();
+    /*
+     * 只中止（唤醒）队列，不 join、不释放任何资源。
+     * 用途：停机时先把可能阻塞在队列上的线程唤醒，再去 join，
+     * 否则"解码线程拿着 m_decodeGate 阻塞在 getWritable()"会把
+     * 同时需要闸门的线程（如 demux 线程的回填）卡到 join 永远不返回。
+     */
+    void abortQueues();
     //找到解码器并创建配置解码器上下文
     bool codecInit(AVCodecParameters *para);
 

@@ -90,11 +90,21 @@ bool DemuxThread::openFile(const char* url,VideoWidget* widget)
             }
         }
         //获取时长
-        double sec = (double)m_fmt_ctx->duration / AV_TIME_BASE; //秒
-        totalMs = sec*1000; // 换算成毫秒
-        qDebug()<<"totalMs:" << totalMs ;
-        //打印视频流详细信息
-        av_dump_format(m_fmt_ctx, 0, url, 0);
+        /*
+         * 注意：上面 avformat_find_stream_info 失败的分支里已经
+         * avformat_close_input(&m_fmt_ctx)（它会把 m_fmt_ctx 置成 NULL），
+         * 这里必须判空 —— 否则"播放中再打开一个读不出流信息的文件"就是
+         * 空指针解引用（第一次打开时 m_fmt_ctx 刚 open 成功，看不出来）。
+         */
+        if (m_fmt_ctx) {
+            double sec = (double)m_fmt_ctx->duration / AV_TIME_BASE; //秒
+            totalMs = sec*1000; // 换算成毫秒
+            qDebug()<<"totalMs:" << totalMs ;
+            //打印视频流详细信息
+            av_dump_format(m_fmt_ctx, 0, url, 0);
+        } else {
+            totalMs = 0;
+        }
 
         if(tmpRet){
             //获取音视频流信息
@@ -347,9 +357,48 @@ void DemuxThread::close()
     m_isFrameStep.store(false);
     m_isSeeking.store(false);
     setPause(true);  // 先暂停
-    closeAVThread();// 关闭音视频线程
-    clear();         // 清空队列
-    wait();         // 等 demux 线程退出
+    /*
+     * 顺序很重要：必须先等 demux 线程退出，再拆 AV 线程。
+     *
+     * doSeek() / doBackwardRefill() 都跑在 demux 线程里，它们会直接访问
+     * m_videoDecodeThread / m_audioThread 的解码器上下文；如果先
+     * closeAVThread()（它内部 close() 会 avcodec_free_context 释放解码器），
+     * 那么"正在跑 doSeek 的 demux 线程"和"正在释放解码器的 GUI 线程"
+     * 就是并发访问已释放内存 —— 而且这种情况正好发生在"播放中换文件"：
+     * m_isSeeking 虽然在上面被清掉了，但 demux 线程可能早就进了 doSeek()。
+     *
+     * 另外，demux 线程退出之后，FrameQueue 的消费者（视频渲染线程 /
+     * 音频播放线程）还没停，但这时已经没有任何线程会再调
+     * FrameQueue::clear()/clearFuture() 了 —— clear() 只发生在下面的
+     * closeAVThread()/clear() 里，此时消费者都已经 join，
+     * 不可能再和消费者抢同一批帧（原来"渲染线程拿着队列里的裸指针，
+     * demux 线程同时 clear() 把同一批 AVFrame unref"的竞态就没了）。
+     *
+     * 但直接 wait() 会有一个反向风险：视频解码线程可能正拿着 m_decodeGate
+     * 阻塞在 FrameQueue::getWritable()（帧队列满、渲染线程刚被 setPause(true)
+     * 停住不再消费），而 demux 线程正在 doBackwardRefill() 里等同一把闸门
+     * —— 那就永远等不到它退出。所以先只 abort 视频队列（不释放任何资源、
+     * 不 join）：getWritable() 立刻返回并让出闸门，渲染线程也会从
+     * getReadable() 醒来并按 isAborted() 退出。音频队列不在这里动，
+     * 交给 closeAVThread() 按它自己的顺序（先置 m_isExit 再 abort）处理，
+     * 免得音频解码线程在 m_isExit 还是 false 时空转。
+     */
+    if (m_videoDecodeThread) m_videoDecodeThread->abortQueues();
+
+    wait();          // 1. 等 demux 线程退出（它自己会响应 m_isExit）
+    closeAVThread(); // 2. 关闭音视频线程（join 渲染/解码/音频线程）
+    clear();         // 3. 清空队列：消费者都已 join，安全
+    /*
+     * 上一轮的"尾帧/播完"标志不能带进下一次播放：
+     * 否则换台后新文件的渲染线程会以为"已经播到尾部"，
+     * 立刻置 playDone → demux 线程把新文件当成已播完 →
+     * seek(0.0) 或 emit playNext()（带播放列表时会瞬间又切一次台，
+     * 把上面这些竞态反复触发）。
+     * 必须放在线程 join 之后清：渲染线程在尾帧阶段会重新置位。
+     */
+    m_eof.store(false);
+    playDone.store(false);
+    if (m_videoDecodeThread) m_videoDecodeThread->resetPlayState();
     //demux 线程已经退出，这时处理残留的包才安全
     if(m_pendingPkt){
         av_packet_free(&m_pendingPkt);
@@ -551,9 +600,26 @@ void DemuxThread::doSeek()
     if (m_videoDecodeThread) m_videoDecodeThread->setPause(true);
     if (m_hasAudio && m_audioThread) m_audioThread->setPause(true);
 
-    //清空两个 packet 队列和 frame 队列
+    /*
+     * 清空两个 packet 队列和 frame 队列。
+     *
+     * 清 frame 队列之前必须把视频渲染线程"停稳 + join"：
+     * FrameQueue::getReadable() 返回的是队列内部槽位的裸指针（解锁后才交给消费者），
+     * 而 clear() 会把同一批 AVFrame unref 掉 —— 渲染线程正好在 `av_frame_clone()`
+     * 用这些帧时就是 UAF。Linux/glibc 会把 >128KB 的块 free 后立刻 munmap
+     * （1080p 一帧 ≈3.1MB），所以那边是必崩；Windows 堆还留着页，表现为"偶发花屏/不崩"。
+     * 这里直接复用 stop()/restart()：stop() 会 abort 帧队列并 join，
+     * 保证清队列的这一刻没有任何消费者持有队列里的裸指针。
+     * 只在 clear 前后停一下（不跨越整个 seek），代价最小。
+     */
+    bool renderParked = false;
+    if (m_hasVideo && m_videoDecodeThread) {
+        m_videoDecodeThread->parkRenderer();
+        renderParked = true;
+    }
     if(m_hasVideo) m_videoDecodeThread->clear();
     if(m_hasAudio) m_audioThread->clear();
+    if (renderParked) m_videoDecodeThread->unparkRenderer();
 
     //2.seek（目标毫秒由 requestSeekMs 统一换算好）
     int64_t seekMs = m_seekMs.load();

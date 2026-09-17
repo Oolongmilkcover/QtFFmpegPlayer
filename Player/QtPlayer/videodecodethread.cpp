@@ -56,6 +56,8 @@ bool VideoDecodeThread::open(VideoWidget *widget, int width, int height,AVStream
     qDebug()<< "VideoDecodeThread::open!";
     if (!videoStream||!widget)return false;
     close();  //停止上一轮残留线程
+    //上一轮的"尾帧/播完"标志作废（否则新文件会被当成已播完）
+    resetPlayState();
     m_isExit = false;
     if (m_pktQue)   m_pktQue->reset();
     if (m_frameQue) m_frameQue->reset();
@@ -225,6 +227,13 @@ void VideoDecodeThread::setLastSome(bool lastSome)
     m_videoRenderThread->lastSome = lastSome;
 }
 
+void VideoDecodeThread::resetPlayState()
+{
+    if (!m_videoRenderThread) return;
+    m_videoRenderThread->lastSome.store(false);
+    m_videoRenderThread->playDone.store(false);
+}
+
 long long VideoDecodeThread::getVideoRenderPts()
 {
     return m_videoRenderThread->pts.load();
@@ -278,6 +287,22 @@ void VideoDecodeThread::restart()
     if (m_videoRenderThread)
         m_videoRenderThread->restart();
     start();
+}
+
+void VideoDecodeThread::parkRenderer()
+{
+    if (!m_videoRenderThread) return;
+    //stop()：m_isExit = true → m_frameQueue->abort() → join
+    //（渲染线程若正阻塞在 getReadable() 上会被 abort 唤醒并退出）
+    m_videoRenderThread->stop();
+}
+
+void VideoDecodeThread::unparkRenderer()
+{
+    if (!m_videoRenderThread) return;
+    //stop() 留下的 abort 标志先清掉，否则渲染线程一起来就又会按 isAborted() 退出
+    if (m_frameQue) m_frameQue->reset();
+    m_videoRenderThread->restart();
 }
 
 void VideoDecodeThread::requestStep(int delta)

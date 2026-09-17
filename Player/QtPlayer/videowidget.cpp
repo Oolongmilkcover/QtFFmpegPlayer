@@ -1,5 +1,6 @@
 #include "videowidget.h"
 #include <QDebug>
+#include <QOpenGLContext>
 #include <QTimer>
 #include <QTextStream>
 #include<sstream>
@@ -87,11 +88,18 @@ VideoWidget::~VideoWidget()
     }
     mux.unlock();
 
-    makeCurrent();
-
-    glDeleteTextures(3, texs);
-
-    doneCurrent();
+    //没初始化过 / 上下文已经没了：纹理本来就没建出来，别再调 GL
+    //（Qt6 里 makeCurrent() 在未初始化时是静默空操作，之后调 GL
+    //  在没有当前上下文时 Linux 上会直接段错误，Windows 上则看不出问题）
+    if (isValid())
+    {
+        makeCurrent();
+        if (QOpenGLContext::currentContext() == context())
+        {
+            glDeleteTextures(3, texs);
+        }
+        doneCurrent();
+    }
 }
 
 void VideoWidget::clearScreen()
@@ -164,6 +172,40 @@ void VideoWidget::Init(int width, int height)
     this->height = height;
 
     makeCurrent();
+    /*
+     * Qt6 的 QOpenGLWidget::makeCurrent() 在 widget 还没初始化时是
+     * 静默空操作（内部就是 if (!d->initialized) return;），不会给出任何警告；
+     * 紧接着调 GL 就变成"没有当前上下文"：
+     *   Linux（GLVND/libGL）下 GL 入口的 dispatch 表是空的 → 直接段错误；
+     *   Windows 的 opengl32 对这批 GL 1.1 函数通常什么都不做（所以不崩）。
+     * 因此必须先确认上下文真的拿到了，拿不到就放弃这一轮
+     * （等下一次 paint 重新初始化 context 后会再走一遍 Init）。
+     */
+    if (!isValid() || !context() || QOpenGLContext::currentContext() != context())
+    {
+        //上下文还没就绪：先记下来，等 initializeGL() 之后再补建纹理，
+        //否则"打开文件时窗口还没画过第一帧"就会一直没有画面。
+        m_needTextures = true;
+        doneCurrent();
+        mux.unlock();
+        return;
+    }
+    createTextures();
+
+    doneCurrent();
+    mux.unlock();
+
+
+}
+
+/*
+ * 创建 Y/U/V 三张纹理。调用者必须持有 mux 且已经把 widget 的上下文设为
+ * current（Init() / initializeGL() 都满足）。尺寸取成员 width/height。
+ */
+void VideoWidget::createTextures()
+{
+    if (width <= 0 || height <= 0) return;
+
     if (texs[0])
     {
         glDeleteTextures(3, texs);
@@ -194,11 +236,6 @@ void VideoWidget::Init(int width, int height)
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     //创建材质显卡空间
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RED, width / 2, height / 2, 0, GL_RED, GL_UNSIGNED_BYTE, 0);
-
-    doneCurrent();
-    mux.unlock();
-
-
 }
 //初始化opengl
 void VideoWidget::initializeGL()
@@ -275,6 +312,18 @@ void VideoWidget::initializeGL()
 
     // ==========滤镜 uniform ==========
     m_filterLoc = program.uniformLocation("filterType");
+
+    /*
+     * 补偿路径：如果 Init() 是在"上下文还没就绪"的时候被调用的
+     * （例如程序刚启动、窗口还没画过第一帧就打开了文件），
+     * 那时没法建纹理，只记了 m_needTextures。现在上下文一定 current 了，
+     * 补建一次，否则画面永远是黑的。
+     */
+    if (m_needTextures)
+    {
+        createTextures();
+        m_needTextures = false;
+    }
 
     mux.unlock();
 }
