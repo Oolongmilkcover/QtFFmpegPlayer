@@ -17,6 +17,7 @@ public:
 
 signals:
     void openFile();
+    void openLink();
     void closeClicked();
     void hideWindow();
     void maximization();

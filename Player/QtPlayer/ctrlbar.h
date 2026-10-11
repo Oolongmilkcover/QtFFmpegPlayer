@@ -53,6 +53,14 @@ public slots:
     void setSpeedLabel(double speed);
     void setVolumeSlider(int value);   // 0~100
 
+    /*
+     * 流媒体模式：快进 / 快退 / 逐帧 / 倍速 / 上下集对直播流没有意义，
+     * 把这些按钮和进度条置灰（播放/暂停、停止、音量、全屏、滤镜、播放列表照旧可用）。
+     * Player::playFile 每次打开都按 DemuxThread::isStreamMedia() 调一次，
+     * 换回本地视频时自动恢复。
+     */
+    void setStreamMode(bool isStream);
+
 protected:
     void resizeEvent(QResizeEvent *event) override;
 
@@ -93,6 +101,8 @@ private:
     bool m_isVolumeSliderPress = false;
     bool m_isSliderInit = false;
     bool m_isPlayLiseShow = false;
+    //是否处于流媒体模式（决定 stepFrameTime 退出逐帧时能不能把按钮重新点亮）
+    bool m_isStreamMode = false;
     double m_speed = 1.0;
 };
 

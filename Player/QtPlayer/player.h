@@ -69,7 +69,9 @@ private slots:
     //进度条
     void sliderSeek(double pos);
 
-    void on_openFile_clicked();
+    void on_openFile();
+
+    void on_openLink();
 
     void setVolume(double pos);
 

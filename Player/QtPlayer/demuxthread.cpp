@@ -13,6 +13,35 @@ extern "C" {
 //用带超时的等待，保证 demux 线程随时能响应 seek / 退出 / 逐帧回填
 static constexpr int PUSH_TIMEOUT_MS = 10;
 
+/*
+ * 网络读写等待上限（微秒）。
+ * rw_timeout 是"所有协议都接受"的选项（见 libavformat 协议文档），
+ * 用来兜住"TCP 连上了但对端不发数据"（协议握手卡住 / 直播流中断）时的无限期阻塞。
+ * 注意它管不到 TCP 连接建立阶段（那个超时由操作系统决定）。
+ */
+static constexpr int64_t NETWORK_RW_TIMEOUT_US = 5 * 1000 * 1000;
+
+/*
+ * 判断要打开的是不是网络流媒体。
+ *
+ * 判据：URL 里带 "协议://" 前缀，且协议不是 file。这里用"排除 file"而不是列协议白名单，
+ * 以后接新协议（srt 之类）不用回来改。
+ *   - 本地路径 "D:/a.mp4"、"/home/a.mp4"、UNC "\\server\share\a.mp4" 都没有 "://" → 不是流；
+ *   - "file:///D:/a.mp4" 协议是 file → 也不是流；
+ *   - rtmp / rtmps / http / https / rtsp / rtp / udp / tcp / srt …… → 一律算流媒体。
+ *
+ * 注意这是"按 URL 判定"，不区分直播和"网络上的点播文件"：
+ * 放在 http 上的普通 mp4 也会被当成流媒体，从而关掉快进/逐帧/倍速。
+ * 要区分的话得等 find_stream_info 之后看 duration 是否为 AV_NOPTS_VALUE（是否直播），
+ * 那会让判定时机晚于 UI 初始化，所以这里先用简单确定的规则。
+ */
+static bool isStreamUrl(const QString &url)
+{
+    const int sep = url.indexOf(QLatin1String("://"));
+    if (sep <= 0) return false;                 //没有协议头 → 本地路径
+    return url.left(sep).compare(QLatin1String("file"), Qt::CaseInsensitive) != 0;
+}
+
 DemuxThread::DemuxThread(QObject *parent)
     : QThread{parent}
 {
@@ -58,10 +87,40 @@ bool DemuxThread::openFile(const char* url,VideoWidget* widget)
     m_isExit.store(false);
     m_serial.store(0); //每次加载时serial清零
     m_seekPauseing.store(false); //兜底：清掉上一次可能残留的“seek 进行中”
+    //这次打开的是不是网络流媒体（先算出来，成功后再写进成员，失败不污染状态）
+    const bool streamMedia = isStreamUrl(QString::fromUtf8(url));
 
     bool tmpRet = true;
     {
         std::lock_guard<std::mutex> lock(m_mutex);
+        /*
+         * 打开网络流时 avformat_open_input 自己就可能长时间阻塞（DNS 解析 / TCP 连接 /
+         * 协议握手），而 openFile() 是在 GUI 线程里被调用的 —— 这段阻塞期间窗口连关闭
+         * 事件都处理不了。所以做两件事：
+         *
+         * 1) 先自己 avformat_alloc_context() 并把中断回调挂上，再交给 open。
+         *    原来回调是"open 成功之后"才挂的，等于 open 阶段完全没有中断点。
+         *    FFmpeg 允许传入已分配的 AVFormatContext，open 失败时它会自行释放并置 NULL。
+         * 2) 用 rw_timeout 限制网络读写等待，避免"连上了但对端不发数据"时无限期挂住。
+         *
+         * 仍要清楚：TCP 连接阶段的超时由操作系统决定（黑洞地址实测约 5.5s，某些网络下
+         * 可能 20s+），DNS 解析也不受这两者约束 —— 要做到"打开期间界面完全不卡"，
+         * 得把 open 挪到工作线程去，那是后续的事。
+         */
+        if (!m_fmt_ctx) {
+            m_fmt_ctx = avformat_alloc_context();
+            if (!m_fmt_ctx) {
+                qDebug() << "avformat_alloc_context failed";
+                closeAVThread();
+                return false;
+            }
+        }
+        m_fmt_ctx->interrupt_callback.callback = interruptCallback;
+        m_fmt_ctx->interrupt_callback.opaque   = this;
+        //每次打开前都重新设一遍：avformat_open_input 会「原地替换」这个字典
+        //（只留下它没识别的项），只设一次的话第二次打开就丢参数了。
+        av_dict_set_int(&m_option, "rw_timeout", NETWORK_RW_TIMEOUT_US, 0);
+
         //2.打开解封装打开输入流
         int ret = avformat_open_input(&m_fmt_ctx, url, NULL, &m_option);
         if (ret < 0) {
@@ -76,10 +135,7 @@ bool DemuxThread::openFile(const char* url,VideoWidget* widget)
             }
             return false;
         }else{
-            //配合rtsp流不卡 退出流程设置的回调函数
-            m_fmt_ctx->interrupt_callback.callback = interruptCallback;
-            m_fmt_ctx->interrupt_callback.opaque   = this;
-
+            //中断回调已在 open 之前挂好（见上），这里直接读流信息
             ret = avformat_find_stream_info(m_fmt_ctx, NULL);
             if (ret < 0) {
                 qDebug()<< "读取流信息失败";
@@ -97,8 +153,21 @@ bool DemuxThread::openFile(const char* url,VideoWidget* widget)
          * 空指针解引用（第一次打开时 m_fmt_ctx 刚 open 成功，看不出来）。
          */
         if (m_fmt_ctx) {
-            double sec = (double)m_fmt_ctx->duration / AV_TIME_BASE; //秒
-            totalMs = sec*1000; // 换算成毫秒
+            /*
+             * duration 未知时 FFmpeg 填的是 AV_NOPTS_VALUE（INT64_MIN），
+             * 直播流（RTMP / HTTP-FLV / 低延迟 HLS）基本都是这种情况。
+             * 不判空就会算出约 -9.2e12 的毫秒值，往上层的连锁反应是：
+             *   进度条 maximum 被 QSlider 钳成 0 → 松手时 0/0 = NaN 触发一次 seek；
+             *   总时长标签还会被 msToString 写成 "-2562047:xx:xx" 这种天文负数。
+             * 时长未知就保持 0，让上层按"无进度"处理。
+             */
+            if (m_fmt_ctx->duration != AV_NOPTS_VALUE && m_fmt_ctx->duration > 0) {
+                double sec = (double)m_fmt_ctx->duration / AV_TIME_BASE; //秒
+                totalMs = sec*1000; // 换算成毫秒
+            } else {
+                totalMs = 0;
+                qDebug()<<"时长未知（直播流 / 无 duration 元数据），按无进度条处理";
+            }
             qDebug()<<"totalMs:" << totalMs ;
             //打印视频流详细信息
             av_dump_format(m_fmt_ctx, 0, url, 0);
@@ -182,7 +251,18 @@ bool DemuxThread::openFile(const char* url,VideoWidget* widget)
     }else{
         isCompleteInit = true;
         setPause(false);
-        qDebug()<<"openFile success";
+        if (streamMedia) {
+            /*
+             * 倍速是"跨文件残留"的状态：Player::m_speed、AudioThread::m_desiredSpeed、
+             * VideoRenderThread::m_speed 都不会因为换文件自动复位（AudioThread::open() 只把
+             * atempo 按 1.0 建了一次，解码线程很快又会按 m_desiredSpeed 重建回 2.0）。
+             * 流媒体又不允许改倍速 —— 不在这里拉回 1.0 的话，上一个本地视频的 2 倍速会
+             * 直接带进流里，而且用户根本改不回来。
+             */
+            applySpeed(1.0);
+        }
+        m_isStreamMedia.store(streamMedia);
+        qDebug()<<"openFile success" << (streamMedia ? "(流媒体：快进/快退/逐帧/倍速/上下集已关闭)" : "(本地文件)");
     }
     if (m_hasAudio) m_audioTimebase = m_fmt_ctx->streams[m_audioStream]->time_base;
     if (m_hasVideo) m_videoTimebase = m_fmt_ctx->streams[m_videoStream]->time_base;
@@ -216,6 +296,7 @@ void DemuxThread::setPause(bool isPause)
 void DemuxThread::startFrameStep()
 {
     if (!m_hasVideo || !m_videoDecodeThread) return;
+    if (m_isStreamMedia.load()) return;            //流媒体没有可回退的"帧位置"，不支持逐帧
     if (m_isFrameStep.exchange(true)) return;      //已经在逐帧了
 
     //逐帧期间：demux 与解码线程继续工作，只暂停“渲染”
@@ -254,7 +335,7 @@ void DemuxThread::endFrameStep()
 
 bool DemuxThread::stepNextFrame()
 {
-    if(!m_hasVideo || m_disableSeekFlag || !m_videoDecodeThread) return false;
+    if(!m_hasVideo || m_disableSeekFlag || m_isStreamMedia.load() || !m_videoDecodeThread) return false;
     if(!m_isFrameStep.load()){
         startFrameStep();
     }
@@ -265,7 +346,7 @@ bool DemuxThread::stepNextFrame()
 
 bool DemuxThread::stepPrevFrame()
 {
-    if(!m_hasVideo || m_disableSeekFlag || !m_videoDecodeThread) return false;
+    if(!m_hasVideo || m_disableSeekFlag || m_isStreamMedia.load() || !m_videoDecodeThread) return false;
     if(!m_isFrameStep.load()){
         startFrameStep();
     }
@@ -290,6 +371,15 @@ bool DemuxThread::seekToMs(long long ms)
 
 bool DemuxThread::requestSeekMs(long long ms)
 {
+    /*
+     * 流媒体（网络流）不执行任何 seek：快进 / 快退 / 拖动进度条最终都汇到这里，
+     * 直播流的"位置"本来也不由客户端决定。这是位置上的唯一闸门，
+     * Player 那边的拦截只是"别让按钮亮着"的第一道。
+     * （run() 里播完后的重播也走 seek(0.0)，那边对流媒体已经改成停机，
+     *   否则重播被这里挡掉后会变成反复触发 EOF 的忙等。）
+     */
+    if(m_isStreamMedia.load()) return false;
+
     if(ms < 0) ms = 0;
     if(totalMs > 0 && ms > totalMs) ms = totalMs;
 
@@ -407,6 +497,8 @@ void DemuxThread::close()
     m_disableSeekFlag = false;
     m_containerName.clear();
     m_seekPauseing.store(false);   // 兜底：别把“seek 进行中”带进下一次播放
+    //复位"流媒体"：停机/换文件后这些机制默认可用，下次 openFile 会按新 URL 重新判定
+    m_isStreamMedia.store(false);
     std::lock_guard<std::mutex> lock(m_mutex);
     if (m_fmt_ctx) {
         avformat_close_input(&m_fmt_ctx);
@@ -526,8 +618,14 @@ void DemuxThread::run()
                     if(m_videoDecodeThread->getPlayDone()){
                         m_videoDecodeThread->setLastSome(false);
                         m_eof.store(false);
-                        // 直接 seek 到开头 或下一集
-                        if(m_hasPlayList){
+                        /*
+                         * 流媒体：既不重播也不切下一集（这两个机制对直播都没意义），
+                         * 直接暂停停在尾帧。否则下面的 seek(0.0) 会被 requestSeekMs
+                         * 的流媒体闸门挡掉，然后反复触发 EOF —— 变成忙等。
+                         */
+                        if(m_isStreamMedia.load()){
+                            setPause(true);
+                        }else if(m_hasPlayList){
                             emit playNext();
                         }else{
                             seek(0.0);
@@ -539,8 +637,10 @@ void DemuxThread::run()
                     if (m_audioThread->isPlayFinished()) {
                         // 播完了
                         m_eof.store(false);
-                        // 直接 seek 到开头 或下一集
-                        if(m_hasPlayList){
+                        //流媒体同视频分支：不重播、不切下一集，暂停收尾
+                        if(m_isStreamMedia.load()){
+                            setPause(true);
+                        }else if(m_hasPlayList){
                             emit playNext();
                         }else{
                             seek(0.0);
@@ -799,6 +899,13 @@ void DemuxThread::setHasPlayList(bool has)
 }
 
 void DemuxThread::setSpeed(double speed)
+{
+    //流媒体不支持倍速（换文件时若判定为流媒体，openFile 会用 applySpeed 强制拉回 1.0）
+    if(m_isStreamMedia.load()) return;
+    applySpeed(speed);
+}
+
+void DemuxThread::applySpeed(double speed)
 {
     m_speed.store(speed);
     if (m_hasAudio && m_audioThread)       m_audioThread->setSpeed(speed);// 音频 atempo

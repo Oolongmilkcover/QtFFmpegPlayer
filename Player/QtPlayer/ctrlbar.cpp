@@ -92,8 +92,18 @@ void CtrlBar::sliderRelease()
     if(!m_isSliderInit){
         return;
     }
+    /*
+     * 时长未知（直播流）时 setSliderMaximum(0) 已经把 m_isSliderInit 置成 false，
+     * 正常走不到这里；这里再挡一层：maximum == 0 时 value/maximum 是 0/0 = NaN，
+     * 而 DemuxThread::seek() 的 "pos < 0 || pos > 1" 对 NaN 全为 false，拦不住它，
+     * 一路会走到 (long long)(NaN * totalMs) —— 那是未定义行为。
+     */
+    const int maximum = ui->playSlider->maximum();
+    if(maximum <= 0){
+        return;
+    }
     double pos = 0.0;
-    pos = (double)ui->playSlider->value() / (double)ui->playSlider->maximum();
+    pos = (double)ui->playSlider->value() / (double)maximum;
     emit seek(pos);
 }
 
@@ -253,21 +263,47 @@ bool CtrlBar::getSliderPress()
 
 void CtrlBar::stepFrameTime(bool flag)
 {
+    /*
+     * 退出逐帧（flag = false）时会把这一批按钮全部重新点亮，
+     * 但流媒体本来就该灰着 —— 所以把 m_isStreamMode 并进来，
+     * 免得 Player::play() 里那次 stepFrameTime(false) 把流媒体的禁用状态抹掉。
+     */
+    const bool dis = flag || m_isStreamMode;
 
     //ui->playOrPauseBtn->setDisabled(flag);
     //ui->nextFrameBtn->setDisabled(flag);
     //ui->prevFrameBtn->setDisabled(flag);
     ui->stopBtn->setDisabled(flag);
-    ui->prevBtn->setDisabled(flag);
-    ui->nextBtn->setDisabled(flag);
+    ui->prevBtn->setDisabled(dis);
+    ui->nextBtn->setDisabled(dis);
     ui->settingBtn->setDisabled(flag);
     ui->fullPlayBtn->setDisabled(flag);
-    ui->ffBtn->setDisabled(flag);
-    ui->rewindBtn->setDisabled(flag);
-    ui->speedupBtn->setDisabled(flag);
-    ui->slowdownBtn->setDisabled(flag);
+    ui->ffBtn->setDisabled(dis);
+    ui->rewindBtn->setDisabled(dis);
+    ui->speedupBtn->setDisabled(dis);
+    ui->slowdownBtn->setDisabled(dis);
     ui->playListBtn->setDisabled(flag);
 
+}
+
+/*
+ * 流媒体模式：只灰掉"用不上"的控件。
+ * 进度条一起禁用 —— 流媒体的位置不由客户端决定，能拖也没意义（也会让 NaN 那条路径彻底消失）。
+ */
+void CtrlBar::setStreamMode(bool isStream)
+{
+    m_isStreamMode = isStream;
+
+    ui->playSlider->setDisabled(isStream);      //进度条
+
+    ui->ffBtn->setDisabled(isStream);           //快进
+    ui->rewindBtn->setDisabled(isStream);       //快退
+    ui->prevFrameBtn->setDisabled(isStream);    //上一帧
+    ui->nextFrameBtn->setDisabled(isStream);    //下一帧
+    ui->speedupBtn->setDisabled(isStream);      //升速
+    ui->slowdownBtn->setDisabled(isStream);     //降速
+    ui->prevBtn->setDisabled(isStream);         //上一集
+    ui->nextBtn->setDisabled(isStream);         //下一集
 }
 
 void CtrlBar::setSpeedLabel(double speed)

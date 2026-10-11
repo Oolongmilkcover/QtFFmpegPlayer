@@ -12,6 +12,7 @@
 #include <QFileInfo>
 #include <QGuiApplication>   // 只在 Wayland 才需要请系统接管窗口缩放
 #include <QWindow>           // startSystemResize / startSystemMove
+#include <QInputDialog>
 
 //快进/快退的“尾部”去抖窗口：停止按键多久后，把累积的目标补上。
 //配合“前沿”（这一串按键的第一次立即生效）实现 B 站式手感：
@@ -106,7 +107,8 @@ Player::Player(QWidget *parent)
 
     //---------------------------------------------------------------------------
     //顶部按键组
-    connect(ui->topMenu, &TopMenu::openFile, this,&Player::on_openFile_clicked);
+    connect(ui->topMenu, &TopMenu::openFile, this,&Player::on_openFile);
+    connect(ui->topMenu, &TopMenu::openLink, this,&Player::on_openLink);
     connect(ui->topMenu, &TopMenu::closeClicked, this, &QWidget::close);
     connect(ui->topMenu, &TopMenu::hideWindow, this,[this]{this->showMinimized();});
     connect(ui->topMenu, &TopMenu::maximization, this,[this]{
@@ -205,12 +207,34 @@ void Player::mouseDoubleClickEvent(QMouseEvent *e)
 
 
 
-void Player::on_openFile_clicked()
+void Player::on_openFile()
 {
     QString name = QFileDialog::getOpenFileName(this, "选择视频文件");
     if (name.isEmpty()) return;
     //addToPlayList(name);   // 打开也加入列表
     playFile(name);
+}
+
+void Player::on_openLink()
+{
+    bool ok = false;
+    QString url = QInputDialog::getText(
+        this,
+        "打开链接",
+        "请输入视频链接（RTMP):",
+        QLineEdit::Normal,
+        "",
+        &ok
+        );
+
+    if (!ok || url.isEmpty())
+        return;
+
+    if (url.startsWith("rtmp://") || url.startsWith("http://") || url.startsWith("https://")) {
+        playFile(url);
+    } else {
+        QMessageBox::warning(this, "错误", "不支持的链接格式，请使用 RTMP/HTTP/HTTPS。");
+    }
 }
 
 void Player::setVolume(double pos)
@@ -260,6 +284,8 @@ void Player::stopToPlay()
     setPausePicture(true);
     dt.close();
     ui->video->clearScreen();
+    //停机后不再有"流媒体"状态，这些机制恢复默认可用（下次 playFile 会按新片源重新判定）
+    ui->ctrlbar->setStreamMode(false);
     ui->ctrlbar->setDisabled(true);
     ui->topMenu->setNoPlayText();
     m_videoSrcH = 0;
@@ -327,6 +353,17 @@ void Player::playFile(const QString &path)
     dt.start();
     this->showNormal();
     m_isInit = true;
+    /*
+     * 流媒体：把快进/快退/逐帧/倍速/上下集这些入口整体关掉（按钮 + 快捷键 + 进度条），
+     * 换回本地视频时这里会重新判定并自动恢复。
+     */
+    ui->ctrlbar->setStreamMode(dt.isStreamMedia());
+    if (dt.isStreamMedia() && m_speed != 1.0) {
+        //倍速已经被 DemuxThread::openFile 强制拉回 1.0，标签也得跟着回到 1.0，
+        //否则界面写着 2.0x、实际按 1.0x 播，而倍速按钮又是灰的，用户无从判断。
+        m_speed = 1.0;
+        ui->ctrlbar->setSpeedLabel(m_speed);
+    }
     // 重置滑块状态，避免之前操作的影响
     isSliderPress = false;                 // 清除按下标志
     // 换文件时丢弃上一次遗留的待生效 seek 与去抖定时器
@@ -360,6 +397,8 @@ void Player::playFile(const QString &path)
 
 void Player::playNext()
 {
+    //流媒体不支持上下集（播完也不会自动切，见 DemuxThread::run 的 EOF 分支）
+    if(dt.isStreamMedia()) return;
     QListWidget *list = ui->playList->getListWidget();
     if (list->count() == 0) return;
     ui->playList->next();                              // 环形选中下一行
@@ -369,6 +408,8 @@ void Player::playNext()
 
 void Player::playPrev()
 {
+    //流媒体不支持上下集
+    if(dt.isStreamMedia()) return;
     QListWidget *list = ui->playList->getListWidget();
     if (list->count() == 0) return;
     ui->playList->prev();                              // 环形选中上一行
@@ -401,7 +442,8 @@ void Player::rewindSeekFiveSec()
 // 因此：单按 = 1 次 seek，连按/长按 = 2 次 seek（而不是 N 次）。
 void Player::queueSeekBy(long long deltaMs)
 {
-    if(!m_isInit || dt.m_seekPauseing.load()) return;
+    //流媒体不支持快进/快退（DemuxThread::requestSeekMs 里还有一道闸门兜底）
+    if(!m_isInit || dt.isStreamMedia() || dt.m_seekPauseing.load()) return;
     //逐帧中快进/快退：先退出逐帧（位置会对齐）
     exitStepFrame();
 
@@ -436,6 +478,8 @@ void Player::queueSeekBy(long long deltaMs)
 void Player::stepFrame(int mode)
 {
     if(!m_isInit) return;
+    //流媒体没有"上一帧/下一帧"这个概念（底层也回退不了），不进入逐帧模式
+    if(dt.isStreamMedia()) return;
     //上一帧 / 下一帧：进入逐帧模式（暂停渲染，解码继续）
     bool success = false;
     if(mode == 1){
@@ -481,6 +525,8 @@ void Player::adjustVolume(double delta)
 
 void Player::changeSpeed(double delta)
 {
+    //流媒体不支持倍速（DemuxThread::setSpeed 里还有一道闸门兜底）
+    if(dt.isStreamMedia()) return;
     double newSpeed = m_speed + delta;
     if (newSpeed < 0.5) newSpeed = 0.5;
     if (newSpeed > 2.0)  newSpeed = 2.0;

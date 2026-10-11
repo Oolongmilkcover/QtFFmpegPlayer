@@ -98,6 +98,15 @@ public:
     //是否有视频流
     bool hasVideo() const { return m_hasVideo; }
 
+    /*
+     * 本次打开的是不是网络流媒体（按 URL 的 "协议://" 判定，见 demuxthread.cpp 的 isStreamUrl）。
+     *
+     * 流媒体不支持 快进/快退、逐帧、倍速、上下集 —— 这几个机制都建立在
+     * "能 seek / 时长确定 / 能重定位到某一帧"之上，直播流一个都不满足。
+     * 每次 openFile 按新 URL 重新判定、close() 复位，所以换回本地视频后自动恢复可用。
+     */
+    bool isStreamMedia() const { return m_isStreamMedia.load(); }
+
     std::atomic<bool> m_seekPauseing = false;
 
 private slots:
@@ -120,6 +129,8 @@ private:
     bool requestSeekMs(long long ms);
     //逐帧回退到历史最旧帧后，向后解码一段补进历史
     void doBackwardRefill();
+    //真正把倍速下发到音视频线程（跳过 setSpeed 里"流媒体不支持倍速"的闸门）
+    void applySpeed(double speed);
 
     // 上一次没推进包队列的包（队列满），下次循环重试
     AVPacket* m_pendingPkt = nullptr;
@@ -173,6 +184,13 @@ private:
     // 实际解析出来的封装名
     QString m_containerName;
     std::atomic<bool> m_disableSeekFlag{false};
+
+    /*
+     * 是否网络流媒体（openFile 成功后写入，close 复位）。
+     * 流媒体的闸门：requestSeekMs / startFrameStep / stepNext|PrevFrame /
+     * setSpeed 都会先看这个标志，另见 isStreamMedia()。
+     */
+    std::atomic<bool> m_isStreamMedia{false};
 
 
 

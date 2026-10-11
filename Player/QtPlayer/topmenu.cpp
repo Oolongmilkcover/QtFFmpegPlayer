@@ -4,6 +4,8 @@
 #include <QFileInfo>
 #include <QGuiApplication>   // 只在 Wayland 才需要请系统接管窗口移动
 #include <QWindow>           // startSystemMove
+#include <QMenu>
+#include <QAction>
 
 TopMenu::TopMenu(QWidget *parent)
     : QWidget(parent)
@@ -82,7 +84,16 @@ void TopMenu::stepFrameTime(bool flag)
 
 void TopMenu::on_openFileBtn_clicked()
 {
-    emit openFile();
+    QMenu menu(this);
+    // 菜单项：打开文件 / 打开链接
+    QAction *openfile = menu.addAction("打开文件");
+    QAction *openlink   = menu.addAction("打开链接");
+    // 在按钮下方弹出菜单
+    QAction *chosen = menu.exec(ui->openFileBtn->mapToGlobal(
+        QPoint(0, ui->openFileBtn->height())));
+    // 判断选中了哪个
+    if (chosen == openfile) emit openFile();
+    else if (chosen == openlink)   emit openLink();
 }
 
 
