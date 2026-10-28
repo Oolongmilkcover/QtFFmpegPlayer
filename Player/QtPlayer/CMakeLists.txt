@@ -81,6 +81,7 @@ if(WIN32)
 
     find_library(AVCODEC_LIB avcodec PATHS ${FFMPEG_PATH}/lib NO_DEFAULT_PATH)
     find_library(AVFORMAT_LIB avformat PATHS ${FFMPEG_PATH}/lib NO_DEFAULT_PATH)
+    find_library(AVDEVICE_LIB avdevice PATHS ${FFMPEG_PATH}/lib NO_DEFAULT_PATH)
     find_library(AVUTIL_LIB avutil PATHS ${FFMPEG_PATH}/lib NO_DEFAULT_PATH)
     find_library(SWRESAMPLE_LIB swresample PATHS ${FFMPEG_PATH}/lib NO_DEFAULT_PATH)
     find_library(SWSCALE_LIB swscale PATHS ${FFMPEG_PATH}/lib NO_DEFAULT_PATH)
@@ -89,6 +90,7 @@ if(WIN32)
     target_link_libraries(ffmpeg_deps INTERFACE
         ${AVCODEC_LIB}
         ${AVFORMAT_LIB}
+        ${AVDEVICE_LIB}      # 采集设备（dshow）用；播放器不用它，但推流端要用
         ${AVUTIL_LIB}
         ${SWRESAMPLE_LIB}
         ${SWSCALE_LIB}
@@ -97,7 +99,7 @@ if(WIN32)
 else()
     find_package(PkgConfig REQUIRED)
     pkg_check_modules(FFMPEG REQUIRED IMPORTED_TARGET
-        libavcodec libavformat libavutil libswresample libswscale libavfilter)
+        libavcodec libavformat libavdevice libavutil libswresample libswscale libavfilter)
     # PkgConfig::FFMPEG 自带 include 路径与链接参数
     target_link_libraries(ffmpeg_deps INTERFACE PkgConfig::FFMPEG)
 endif()
@@ -141,3 +143,31 @@ target_link_libraries(test_framequeue PRIVATE Qt6::Core ffmpeg_deps)
 
 add_test(NAME framequeue COMMAND test_framequeue)
 set_tests_properties(framequeue PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# ========================== 推流端：op_pusher（mini-OBS） ==========================
+# 类型说明：这是同一个工程里的 console 可执行目标（不是 Qt Widgets 应用，不加 WIN32），
+#          界面就是终端、参数走命令行；只链 Qt6::Core（线程/日志/参数解析），FFmpeg 干活。
+#          要做本地预览窗口时，再打开下面注释掉的 Widgets/OpenGLWidgets 并复用 videowidget.*。
+add_executable(op_pusher
+    pusher/main.cpp
+    pusher/dropqueue.h
+    pusher/pusher.h         pusher/pusher.cpp
+    pusher/capturesource.h  pusher/capturesource.cpp
+    pusher/encoder.h        pusher/encoder.cpp
+    pusher/muxer.h          pusher/muxer.cpp
+)
+target_include_directories(op_pusher PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(op_pusher PRIVATE Qt6::Core ffmpeg_deps)
+# target_link_libraries(op_pusher PRIVATE Qt6::Widgets Qt6::OpenGLWidgets)   # 本地预览用
+
+if(UNIX AND NOT APPLE)
+    target_link_libraries(op_pusher PRIVATE Threads::Threads)
+endif()
+
+# 备注 1：pusher/ 下都是普通 C++ 类（没有 QObject / Q_OBJECT），所以不需要写任何 moc 相关代码；
+#        工程级 CMAKE_AUTOMOC 仍会给它建一个 autogen 目标，但里面没有真正属于 pusher 的 moc 代码
+#        （mocs_compilation.cpp 是空的），无害。
+# 备注 2：pusher 用的是自己的 pusher/dropqueue.h，**不是**播放器的 framequeue.* / packetqueue.*。
+#        原因：契约不同 —— 播放器那两个是"播放时序"的一部分（背压不丢帧 + 历史游标支持逐帧回退），
+#        而 pusher 要的是"实时缓冲"（满了丢最旧，或者落盘时阻塞等待）。
+#        P2 抽 core 时，把 dropqueue.h 提升成 core/queue.h，再让两边各自按需复用。

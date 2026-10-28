@@ -1,7 +1,7 @@
 /*
  * FrameQueue 逐帧状态机单元测试
  *
- * 特点：只依赖 Qt6::Core + FFmpeg(avutil)，**不创建任何窗口 / QApplication**，
+ * 特点：只依赖 Qt6::Core + FFmpeg(avutil)，不创建任何窗口 / QApplication，
  *       所以可以在无桌面环境直接跑（CI、无桌面虚拟机）：
  *           QT_QPA_PLATFORM=offscreen ctest --output-on-failure
  *
