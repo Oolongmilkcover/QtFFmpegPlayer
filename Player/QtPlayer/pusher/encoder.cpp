@@ -1,6 +1,6 @@
 #include "encoder.h"
 
-#include <QDebug>
+#include "log.h"
 
 extern "C" {
 #include <libavutil/audio_fifo.h>      // 音频凑帧：AAC 每帧必须正好 frame_size(1024) 个采样
@@ -39,7 +39,7 @@ static bool drainToSink(AVCodecContext* cc, const PacketSink& sink)
         const int ret = avcodec_receive_packet(cc, pkt);
         if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) break;
         if (ret < 0) {
-            qWarning() << "[encoder] avcodec_receive_packet 失败:" << errStr(ret).c_str();
+            logWarn() << "[encoder] avcodec_receive_packet 失败:" << errStr(ret).c_str();
             ok = false;
             break;
         }
@@ -86,7 +86,7 @@ public:
         //    后者可能拿到别的 H.264 实现（比如某些平台的硬件封装），我们要的是明确的 libx264。
         const AVCodec* codec = avcodec_find_encoder_by_name(cfg.videoCodec.c_str());
         if (!codec) {
-            qWarning() << "[encoder] 找不到编码器" << cfg.videoCodec.c_str()
+            logWarn() << "[encoder] 找不到编码器" << cfg.videoCodec.c_str()
                        << "（这份 FFmpeg 可能没编进 libx264，可用 ffmpeg -encoders 确认）";
             return false;
         }
@@ -133,7 +133,7 @@ public:
         // ⑤ 打开编码器
         int ret = avcodec_open2(m_cc, codec, nullptr);
         if (ret < 0) {
-            qWarning() << "[encoder] avcodec_open2 失败:" << errStr(ret).c_str();
+            logWarn() << "[encoder] avcodec_open2 失败:" << errStr(ret).c_str();
             return false;
         }
 
@@ -143,11 +143,11 @@ public:
         if (!m_par) return false;
         ret = avcodec_parameters_from_context(m_par, m_cc);
         if (ret < 0) {
-            qWarning() << "[encoder] avcodec_parameters_from_context 失败:" << errStr(ret).c_str();
+            logWarn() << "[encoder] avcodec_parameters_from_context 失败:" << errStr(ret).c_str();
             return false;
         }
 
-        qInfo().nospace() << "[encoder] 打开成功: " << cfg.videoCodec.c_str()
+        logInfo().nospace() << "[encoder] 打开成功: " << cfg.videoCodec.c_str()
                           << " " << cfg.width << "x" << cfg.height << "@" << cfg.fps
                           << " bitrate=" << cfg.videoBitrate
                           << " gop=" << cfg.gopSize
@@ -173,7 +173,7 @@ public:
         // 防御：格式/尺寸不一致的话编码器会报错甚至崩，这里直接丢掉这一帧并给出提示
         if (inYuv420p->format != m_cc->pix_fmt
             || inYuv420p->width != m_cc->width || inYuv420p->height != m_cc->height) {
-            qWarning() << "[encoder] 输入帧和编码器不匹配（格式或尺寸），丢弃这一帧";
+            logWarn() << "[encoder] 输入帧和编码器不匹配（格式或尺寸），丢弃这一帧";
             return false;
         }
 
@@ -194,7 +194,7 @@ public:
         // send 之后就能还引用了：编码器内部已经把自己需要的数据引用住（依然是零拷贝）
         av_frame_free(&feed);
         if (ret < 0) {
-            qWarning() << "[encoder] avcodec_send_frame 失败:" << errStr(ret).c_str();
+            logWarn() << "[encoder] avcodec_send_frame 失败:" << errStr(ret).c_str();
             return false;
         }
 
@@ -257,7 +257,7 @@ public:
 
         const AVCodec* codec = avcodec_find_encoder_by_name(cfg.audioCodec.c_str());
         if (!codec) {
-            qWarning() << "[encoder] 找不到音频编码器" << cfg.audioCodec.c_str()
+            logWarn() << "[encoder] 找不到音频编码器" << cfg.audioCodec.c_str()
                        << "（用 ffmpeg -encoders 看这份 FFmpeg 有没有 aac）";
             return false;
         }
@@ -279,7 +279,7 @@ public:
 
         int ret = avcodec_open2(m_cc, codec, nullptr);
         if (ret < 0) {
-            qWarning() << "[encoder] 音频 avcodec_open2 失败:" << errStr(ret).c_str();
+            logWarn() << "[encoder] 音频 avcodec_open2 失败:" << errStr(ret).c_str();
             return false;
         }
         if (m_cc->frame_size <= 0) m_cc->frame_size = 1024;     // AAC-LC 固定 1024
@@ -293,12 +293,12 @@ public:
                                   0, nullptr);
         av_channel_layout_uninit(&inLayout);
         if (ret < 0 || !m_swr) {
-            qWarning() << "[encoder] swr_alloc_set_opts2 失败:" << errStr(ret).c_str();
+            logWarn() << "[encoder] swr_alloc_set_opts2 失败:" << errStr(ret).c_str();
             return false;
         }
         ret = swr_init(m_swr);
         if (ret < 0) {
-            qWarning() << "[encoder] swr_init 失败:" << errStr(ret).c_str();
+            logWarn() << "[encoder] swr_init 失败:" << errStr(ret).c_str();
             return false;
         }
 
@@ -308,11 +308,11 @@ public:
 
         m_par = avcodec_parameters_alloc();
         if (!m_par || avcodec_parameters_from_context(m_par, m_cc) < 0) {
-            qWarning() << "[encoder] 音频参数导出失败";
+            logWarn() << "[encoder] 音频参数导出失败";
             return false;
         }
 
-        qInfo().nospace() << "[encoder] 音频打开成功: " << cfg.audioCodec.c_str()
+        logInfo().nospace() << "[encoder] 音频打开成功: " << cfg.audioCodec.c_str()
                           << " " << m_cc->sample_rate << "Hz " << m_cc->ch_layout.nb_channels << "声道 "
                           << av_get_sample_fmt_name(m_cc->sample_fmt)
                           << " 码率=" << cfg.audioBitrate
@@ -348,7 +348,7 @@ public:
         const int got = swr_convert(m_swr, converted->data, cap > 0 ? cap : 1,
                                     const_cast<const uint8_t**>(in->extended_data), in->nb_samples);
         if (got < 0) {
-            qWarning() << "[encoder] swr_convert 失败:" << errStr(got).c_str();
+            logWarn() << "[encoder] swr_convert 失败:" << errStr(got).c_str();
             av_frame_free(&converted);
             return false;
         }
@@ -359,7 +359,7 @@ public:
             const int written =
                 av_audio_fifo_write(m_fifo, reinterpret_cast<void**>(converted->extended_data), got);
             if (written < got) {
-                qWarning() << "[encoder] FIFO 写入不足，丢弃这一帧";
+                logWarn() << "[encoder] FIFO 写入不足，丢弃这一帧";
                 av_frame_free(&converted);
                 return false;
             }
@@ -439,7 +439,7 @@ private:
             const int ret = avcodec_send_frame(m_cc, f);
             av_frame_free(&f);
             if (ret < 0) {
-                qWarning() << "[encoder] 音频 avcodec_send_frame 失败:" << errStr(ret).c_str();
+                logWarn() << "[encoder] 音频 avcodec_send_frame 失败:" << errStr(ret).c_str();
                 ok = false;
                 break;
             }
@@ -464,12 +464,12 @@ std::unique_ptr<IVideoEncoder> createVideoEncoder(const EncoderConfig& cfg)
 {
     // 以后要加硬件编码（NVENC / QSV / VideoToolbox / MediaCodec），在这里按 cfg.videoCodec 分支即可，
     // 上层（Pusher）完全不用改 —— 这就是接口存在的意义。
-    Q_UNUSED(cfg);
+    (void)cfg;
     return std::make_unique<X264VideoEncoder>();
 }
 
 std::unique_ptr<IAudioEncoder> createAudioEncoder(const EncoderConfig& cfg)
 {
-    Q_UNUSED(cfg);
+    (void)cfg;
     return std::make_unique<AacAudioEncoder>();
 }

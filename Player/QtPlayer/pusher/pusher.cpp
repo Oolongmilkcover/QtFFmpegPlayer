@@ -1,6 +1,6 @@
 #include "pusher.h"
 
-#include <QDebug>
+#include "log.h"
 
 extern "C" {
 #include <libavutil/pixdesc.h>     // av_get_pix_fmt_name
@@ -62,7 +62,7 @@ bool Pusher::start()
     if (m_cfg.withVideo) {
         m_video = createVideoSource(m_cfg.video);
         if (!m_video || !m_video->open(m_cfg.video)) {
-            qCritical() << "[pusher] 视频源打开失败；没有摄像头可以用 OBS 虚拟摄像头"
+            logErr() << "[pusher] 视频源打开失败；没有摄像头可以用 OBS 虚拟摄像头"
                            "（--video \"video=OBS Virtual Camera\"）或内置合成源（--testsrc）";
             return false;
         }
@@ -72,7 +72,7 @@ bool Pusher::start()
         m_cfg.encoder.fps    = m_video->fps();
         // yuv420p / x264 要求偶数宽高；设备端如果给的是奇数（少见但可能），提前说清楚
         if (m_cfg.encoder.width % 2 || m_cfg.encoder.height % 2)
-            qWarning() << "[pusher] 设备给出的分辨率是奇数" << m_cfg.encoder.width << "x"
+            logWarn() << "[pusher] 设备给出的分辨率是奇数" << m_cfg.encoder.width << "x"
                        << m_cfg.encoder.height << "，yuv420p 编码可能失败，请在设备端改成偶数分辨率";
     }
 
@@ -81,7 +81,7 @@ bool Pusher::start()
         m_audio = createAudioSource(m_cfg.audio);
         if (!m_audio || !m_audio->open(m_cfg.audio)) {
             // 音频是可选能力：失败不整体退出，退化成"只推视频"更容易排查
-            qWarning() << "[pusher] 音频源打开失败，本次只采集视频";
+            logWarn() << "[pusher] 音频源打开失败，本次只采集视频";
             m_audio.reset();
         } else {
             // 同样用实际值回填（AAC 编码器内部会用 swresample 转成它要的格式）
@@ -96,7 +96,7 @@ bool Pusher::start()
         // ---- 视频编码器 ----
         m_videoEnc = createVideoEncoder(m_cfg.encoder);
         if (!m_videoEnc || !m_videoEnc->open(m_cfg.encoder)) {
-            qCritical() << "[pusher] 视频编码器打开失败";
+            logErr() << "[pusher] 视频编码器打开失败";
             return false;
         }
         // 编码器每产出一包就回调到这里。回调给的指针只在回调期间有效，所以必须 clone：
@@ -121,26 +121,26 @@ bool Pusher::start()
                     m_packetQueue->push(copy);
                 });
             } else {
-                qWarning() << "[pusher] 音频编码器打开失败，本次只推视频（音频仍会采集和统计）";
+                logWarn() << "[pusher] 音频编码器打开失败，本次只推视频（音频仍会采集和统计）";
                 m_audioEnc.reset();
             }
         }
 
         // ---- 输出（文件 或 RTMP）----
-        std::shared_ptr<IMuxer> muxer = createMuxer(m_cfg.output);
-        if (!muxer || !muxer->open(m_cfg.output)) {
-            qCritical() << "[pusher] 打开输出失败:" << m_cfg.output.url.c_str();
+        std::unique_ptr<IMuxer> muxer = createMuxer(m_cfg.output);
+        if (!muxer || !muxer->open(m_cfg.output, &m_abortIo)) {
+            logErr() << "[pusher] 打开输出失败:" << m_cfg.output.url.c_str();
             return false;
         }
         if (!addOutputStreams(*muxer)) {
-            qCritical() << "[pusher] 建输出流失败";
+            logErr() << "[pusher] 建输出流失败";
             return false;
         }
         if (!muxer->writeHeader()) {
-            qCritical() << "[pusher] 写容器头失败";
+            logErr() << "[pusher] 写容器头失败";
             return false;
         }
-        std::atomic_store(&m_muxer, muxer);
+        m_muxer = std::move(muxer);
     }
 
     // ---------------------------------------------------------------- 起线程
@@ -194,9 +194,9 @@ void Pusher::stop()
             std::this_thread::sleep_for(std::chrono::milliseconds(50));
 
         if (!m_pushIdle.load()) {
-            if (auto muxer = std::atomic_load(&m_muxer)) {
-                qWarning() << "[pusher] 写出线程没有在 2 秒内收工，主动叫停网络写（剩余数据可能丢失）";
-                muxer->abort();
+            {
+                logWarn() << "[pusher] 写出线程没有在 2 秒内收工，主动叫停网络写（剩余数据可能丢失）";
+                m_abortIo.store(true);   // 只置标志，不碰 m_muxer（那个指针归写出线程）
             }
         }
     }
@@ -246,17 +246,16 @@ bool Pusher::ensureOutputReady()
 {
     // 快路径：每个包都会走到这里，所以只做最少判断
     {
-        auto cur = std::atomic_load(&m_muxer);
+        IMuxer* cur = m_muxer.get();
         if (cur && cur->isOpen()) return true;
     }
     if (m_outputGivenUp.load()) return false;
 
     // 旧的已经坏了：先收掉它
     {
-        auto broken = std::atomic_load(&m_muxer);
-        if (broken) {
-            broken->abort();                    // 万一还卡在网络写里
-            std::atomic_store(&m_muxer, std::shared_ptr<IMuxer>());
+        if (m_muxer) {
+            m_abortIo.store(true);              // 万一还卡在网络写里，置标志叫停它
+            m_muxer.reset();
             m_waitingKeyframe.store(true);      // 恢复后要等关键帧
             m_stats.reconnects.fetch_add(1);
         }
@@ -266,24 +265,24 @@ bool Pusher::ensureOutputReady()
 
     for (int attempt = 1; m_running.load(); ++attempt) {
         if (m_cfg.reconnectMaxAttempts > 0 && attempt > m_cfg.reconnectMaxAttempts) {
-            qCritical() << "[pusher] 重连达到上限" << m_cfg.reconnectMaxAttempts
+            logErr() << "[pusher] 重连达到上限" << m_cfg.reconnectMaxAttempts
                         << "次，放弃输出（后续的包全部丢弃，但采集还在继续）";
             m_outputGivenUp.store(true);
             return false;
         }
 
-        qInfo().nospace() << "[pusher] 连接输出（第 " << attempt << " 次）: "
+        logInfo().nospace() << "[pusher] 连接输出（第 " << attempt << " 次）: "
                           << m_cfg.output.url.c_str();
 
-        std::shared_ptr<IMuxer> muxer = createMuxer(m_cfg.output);
-        if (muxer && muxer->open(m_cfg.output) && addOutputStreams(*muxer) && muxer->writeHeader()) {
-            std::atomic_store(&m_muxer, muxer);
-            qInfo() << "[pusher] 输出已恢复；等下一个关键帧再继续写";
+        std::unique_ptr<IMuxer> muxer = createMuxer(m_cfg.output);
+        if (muxer && muxer->open(m_cfg.output, &m_abortIo) && addOutputStreams(*muxer) && muxer->writeHeader()) {
+            m_muxer = std::move(muxer);
+            logInfo() << "[pusher] 输出已恢复；等下一个关键帧再继续写";
             return true;
         }
 
         // 100ms 一粒地睡：这样收工时能立刻退出，不用等完整个退避周期
-        qWarning().nospace() << "[pusher] 连接失败，" << delayMs << "ms 后重试";
+        logWarn().nospace() << "[pusher] 连接失败，" << delayMs << "ms 后重试";
         for (int slept = 0; slept < delayMs && m_running.load(); slept += 100)
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
@@ -299,20 +298,20 @@ bool Pusher::ensureOutputReady()
 
 void Pusher::videoCaptureLoop()
 {
-    qInfo() << "[pusher] 视频采集线程启动";
+    logInfo() << "[pusher] 视频采集线程启动";
 
     while (m_running.load()) {
         AVFrame* frame = m_video->readFrame();      // 阻塞读（可被 requestStop 打断）
         if (!frame) {
             if (m_running.load())
-                qWarning() << "[pusher] 视频读帧返回空，采集线程结束";
+                logWarn() << "[pusher] 视频读帧返回空，采集线程结束";
             break;
         }
 
         const uint64_t n = m_stats.videoFrames.fetch_add(1) + 1;
 
         if (n == 1) {
-            qInfo().nospace() << "[pusher] 第 1 帧到达: " << frame->width << "x" << frame->height
+            logInfo().nospace() << "[pusher] 第 1 帧到达: " << frame->width << "x" << frame->height
                               << " format=" << av_get_pix_fmt_name(static_cast<AVPixelFormat>(frame->format))
                               << " pts=" << frame->pts << "us"
                               << " linesize=[" << frame->linesize[0] << "," << frame->linesize[1] << "]";
@@ -326,7 +325,7 @@ void Pusher::videoCaptureLoop()
 
         const int fps = m_video->fps() > 0 ? m_video->fps() : 30;
         if (n % static_cast<uint64_t>(fps) == 0) {
-            qInfo().nospace() << "[pusher] 已采集 " << n << " 帧 (约 "
+            logInfo().nospace() << "[pusher] 已采集 " << n << " 帧 (约 "
                               << (n / static_cast<uint64_t>(fps)) << " 秒)";
         }
 
@@ -338,7 +337,7 @@ void Pusher::videoCaptureLoop()
         }
     }
 
-    qInfo().nospace() << "[pusher] 视频采集线程退出，共采集 " << m_stats.videoFrames.load() << " 帧";
+    logInfo().nospace() << "[pusher] 视频采集线程退出，共采集 " << m_stats.videoFrames.load() << " 帧";
 }
 
 /*
@@ -350,19 +349,19 @@ void Pusher::videoCaptureLoop()
  */
 void Pusher::audioCaptureLoop()
 {
-    qInfo() << "[pusher] 音频采集线程启动";
+    logInfo() << "[pusher] 音频采集线程启动";
 
     while (m_running.load()) {
         AVFrame* frame = m_audio->readFrame();
         if (!frame) {
             if (m_running.load())
-                qWarning() << "[pusher] 音频读帧返回空，采集线程结束";
+                logWarn() << "[pusher] 音频读帧返回空，采集线程结束";
             break;
         }
 
         const uint64_t n = m_stats.audioFrames.fetch_add(1) + 1;
         if (n == 1) {
-            qInfo().nospace() << "[pusher] 第 1 个音频帧: "
+            logInfo().nospace() << "[pusher] 第 1 个音频帧: "
                               << frame->sample_rate << "Hz "
                               << frame->ch_layout.nb_channels << "声道 "
                               << av_get_sample_fmt_name(static_cast<AVSampleFormat>(frame->format))
@@ -371,7 +370,7 @@ void Pusher::audioCaptureLoop()
         }
         // 音频帧很密（每秒几十个），少打点日志
         if (n % 200 == 0)
-            qInfo().nospace() << "[pusher] 已采集音频 " << n << " 帧";
+            logInfo().nospace() << "[pusher] 已采集音频 " << n << " 帧";
 
         if (m_audioEnc && m_audioEnc->encode(frame))
             m_stats.audioEncoded.fetch_add(1);
@@ -382,7 +381,7 @@ void Pusher::audioCaptureLoop()
     // 收尾：把 swresample / FIFO 里剩下的样本编出去（否则结尾会丢掉一小段声音）
     if (m_audioEnc) m_audioEnc->flush();
 
-    qInfo().nospace() << "[pusher] 音频采集线程退出，共采集 " << m_stats.audioFrames.load()
+    logInfo().nospace() << "[pusher] 音频采集线程退出，共采集 " << m_stats.audioFrames.load()
                       << " 帧、编码 " << m_stats.audioEncoded.load() << " 帧";
 }
 
@@ -392,7 +391,7 @@ void Pusher::audioCaptureLoop()
 
 void Pusher::encodeLoop()
 {
-    qInfo() << "[pusher] 编码线程启动";
+    logInfo() << "[pusher] 编码线程启动";
 
     AVFrame* frame = nullptr;
     while (true) {
@@ -413,12 +412,12 @@ void Pusher::encodeLoop()
     // 这些包会经 sink 进入包队列，所以必须在包队列 close 之前执行。
     if (m_videoEnc) m_videoEnc->flush();
 
-    qInfo().nospace() << "[pusher] 编码线程退出，共编码 " << m_stats.encoded.load() << " 帧";
+    logInfo().nospace() << "[pusher] 编码线程退出，共编码 " << m_stats.encoded.load() << " 帧";
 }
 
 void Pusher::pushLoop()
 {
-    qInfo() << "[pusher] 写出线程启动";
+    logInfo() << "[pusher] 写出线程启动";
 
     AVPacket* pkt = nullptr;
     while (true) {
@@ -446,11 +445,11 @@ void Pusher::pushLoop()
                 continue;
             }
             m_waitingKeyframe.store(false);
-            qInfo() << "[pusher] 收到视频关键帧，恢复写出";
+            logInfo() << "[pusher] 收到视频关键帧，恢复写出";
         }
 
         const int pktSize = pkt->size;      // [重点] 先记下来：写完之后包会被 unref，size 会变 0
-        auto muxer = std::atomic_load(&m_muxer);
+        IMuxer* muxer = m_muxer.get();
         if (muxer && muxer->writePacket(pkt)) {
             m_stats.sent.fetch_add(1);
             m_stats.bytes.fetch_add(static_cast<uint64_t>(pktSize));
@@ -461,15 +460,15 @@ void Pusher::pushLoop()
 
     // 收尾：trailer 必须写（mp4 的 moov 箱就在这里，不写文件基本废掉）。
     // 由写出线程自己做，因为它是这个 muxer 的唯一使用者。
-    if (auto muxer = std::atomic_load(&m_muxer)) {
-        muxer->writeTrailer();
-        std::atomic_store(&m_muxer, std::shared_ptr<IMuxer>());   // 析构里会关闭 IO
+    if (m_muxer) {
+        m_muxer->writeTrailer();
+        m_muxer.reset();   // 析构里会关闭 IO
     }
 
     // 告诉 stop()："我已经收工了" —— 它据此决定要不要叫停网络写
     m_pushIdle.store(true);
 
-    qInfo().nospace() << "[pusher] 写出线程退出，共写出 " << m_stats.sent.load() << " 个包";
+    logInfo().nospace() << "[pusher] 写出线程退出，共写出 " << m_stats.sent.load() << " 个包";
 }
 
 // ============================================================================================
@@ -483,7 +482,7 @@ void Pusher::dumpStatsLine()
     const size_t   queueFrames    = m_frameQueue  ? m_frameQueue->size()     : 0;
     const size_t   queuePackets   = m_packetQueue ? m_packetQueue->size()    : 0;
 
-    qInfo().nospace() << "[stats] 采集视频=" << m_stats.videoFrames.load()
+    logInfo().nospace() << "[stats] 采集视频=" << m_stats.videoFrames.load()
                       << " 音频=" << m_stats.audioFrames.load()
                       << " 编码=" << m_stats.encoded.load()
                       << " 音频编码=" << m_stats.audioEncoded.load()

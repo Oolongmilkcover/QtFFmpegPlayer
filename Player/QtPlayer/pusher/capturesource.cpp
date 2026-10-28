@@ -1,6 +1,6 @@
 #include "capturesource.h"
 
-#include <QDebug>
+#include "log.h"
 
 extern "C" {
 #include <libavdevice/avdevice.h>      // dshow / v4l2 / alsa 这些"输入设备"都在这个库里
@@ -82,7 +82,7 @@ public:
                                dstW, dstH, AV_PIX_FMT_YUV420P,
                                SWS_BILINEAR, nullptr, nullptr, nullptr);
         if (!m_sws) {
-            qWarning() << "[capture] sws_getContext 失败:" << srcW << "x" << srcH
+            logWarn() << "[capture] sws_getContext 失败:" << srcW << "x" << srcH
                        << pixName(srcFmt).c_str() << "->" << dstW << "x" << dstH << "yuv420p";
             return false;
         }
@@ -112,7 +112,7 @@ public:
         // 第二个参数是对齐字节数：给 GPU / SIMD 用 32 比较稳。
         int ret = av_frame_get_buffer(dst, 32);
         if (ret < 0) {
-            qWarning() << "[capture] av_frame_get_buffer 失败:" << errStr(ret).c_str();
+            logWarn() << "[capture] av_frame_get_buffer 失败:" << errStr(ret).c_str();
             av_frame_free(&dst);
             return nullptr;
         }
@@ -159,7 +159,7 @@ public:
         // ---- 1) 找到输入格式 ----
         const AVInputFormat* ifmt = av_find_input_format(cfg.inputFormat.c_str());
         if (!ifmt) {
-            qWarning() << "[capture] 找不到输入格式" << cfg.inputFormat.c_str()
+            logWarn() << "[capture] 找不到输入格式" << cfg.inputFormat.c_str()
                        << "；这份 FFmpeg 可能没编进该设备（可以用 --list-devices 或"
                           " 命令行 ffmpeg -devices 确认）";
             return false;
@@ -187,7 +187,7 @@ public:
         // ---- 4) 打开设备 ----
         int ret = avformat_open_input(&m_fmt, cfg.device.c_str(), ifmt, &opts);
         if (ret < 0) {
-            qWarning() << "[capture] 打不开设备" << cfg.device.c_str()
+            logWarn() << "[capture] 打不开设备" << cfg.device.c_str()
                        << ":" << errStr(ret).c_str();
             if (opts) av_dict_free(&opts);
             // avformat_open_input 失败时自己已经把 m_fmt 释放了，这里只要清指针
@@ -198,7 +198,7 @@ public:
         if (opts) {
             AVDictionaryEntry* e = nullptr;
             while ((e = av_dict_get(opts, "", e, AV_DICT_IGNORE_SUFFIX)) != nullptr)
-                qWarning() << "[capture] 设备忽略了参数:" << e->key << "=" << e->value;
+                logWarn() << "[capture] 设备忽略了参数:" << e->key << "=" << e->value;
             av_dict_free(&opts);
         }
 
@@ -206,7 +206,7 @@ public:
         // 这一步之后 codecpar 里的 width/height/format/framerate 才是设备实际给的值。
         ret = avformat_find_stream_info(m_fmt, nullptr);
         if (ret < 0) {
-            qWarning() << "[capture] avformat_find_stream_info 失败:" << errStr(ret).c_str();
+            logWarn() << "[capture] avformat_find_stream_info 失败:" << errStr(ret).c_str();
             return false;
         }
 
@@ -215,7 +215,7 @@ public:
         const AVCodec* decoder = nullptr;
         m_videoStreamIndex = av_find_best_stream(m_fmt, AVMEDIA_TYPE_VIDEO, -1, -1, &decoder, 0);
         if (m_videoStreamIndex < 0 || !decoder) {
-            qWarning() << "[capture] 这个设备没有视频流:" << cfg.device.c_str();
+            logWarn() << "[capture] 这个设备没有视频流:" << cfg.device.c_str();
             return false;
         }
         AVStream* st = m_fmt->streams[m_videoStreamIndex];
@@ -238,11 +238,11 @@ public:
         m_decCtx = avcodec_alloc_context3(decoder);
         if (!m_decCtx) return false;
         ret = avcodec_parameters_to_context(m_decCtx, par);
-        if (ret < 0) { qWarning() << "[capture] avcodec_parameters_to_context 失败:" << errStr(ret).c_str(); return false; }
+        if (ret < 0) { logWarn() << "[capture] avcodec_parameters_to_context 失败:" << errStr(ret).c_str(); return false; }
         m_decCtx->pkt_timebase = st->time_base;   // 有些解码器需要它来算 pts
         // 采集是实时的，多线程解码意义不大（而且会增加一帧延迟），保持默认即可
         ret = avcodec_open2(m_decCtx, decoder, nullptr);
-        if (ret < 0) { qWarning() << "[capture] avcodec_open2 失败:" << errStr(ret).c_str(); return false; }
+        if (ret < 0) { logWarn() << "[capture] avcodec_open2 失败:" << errStr(ret).c_str(); return false; }
 
         // ---- 8) 准备格式转换器 ----
         if (!m_converter.init(m_width, m_height, static_cast<AVPixelFormat>(m_decCtx->pix_fmt),
@@ -256,7 +256,7 @@ public:
         if (!m_decodedFrame || !m_packet) return false;
 
         // 打印"实际"参数——这是 [第1步] 最重要的一行日志
-        qInfo().nospace() << "[capture] 设备打开成功: " << cfg.device.c_str()
+        logInfo().nospace() << "[capture] 设备打开成功: " << cfg.device.c_str()
                           << "  实际 " << m_width << "x" << m_height
                           << " @" << m_fps
                           << "  设备原生格式=" << pixName(m_devicePixFmt).c_str()
@@ -288,7 +288,7 @@ public:
             int ret = av_read_frame(m_fmt, m_packet);
             if (ret < 0) {
                 if (ret != AVERROR_EXIT)     // AVERROR_EXIT 就是被我们自己的中断回调打断的
-                    qWarning() << "[capture] av_read_frame 结束:" << errStr(ret).c_str();
+                    logWarn() << "[capture] av_read_frame 结束:" << errStr(ret).c_str();
                 return nullptr;
             }
 
@@ -302,7 +302,7 @@ public:
             ret = avcodec_send_packet(m_decCtx, m_packet);
             av_packet_unref(m_packet);          // 送完就能还包了（解码器内部已引用它需要的数据）
             if (ret < 0) {
-                qWarning() << "[capture] avcodec_send_packet 失败:" << errStr(ret).c_str();
+                logWarn() << "[capture] avcodec_send_packet 失败:" << errStr(ret).c_str();
                 continue;                       // 单包出错不要退出，继续抓下一帧
             }
 
@@ -312,7 +312,7 @@ public:
                 ret = avcodec_receive_frame(m_decCtx, m_decodedFrame);
                 if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) break;   // 暂时没有更多帧
                 if (ret < 0) {
-                    qWarning() << "[capture] avcodec_receive_frame 失败:" << errStr(ret).c_str();
+                    logWarn() << "[capture] avcodec_receive_frame 失败:" << errStr(ret).c_str();
                     break;
                 }
 
@@ -417,8 +417,8 @@ public:
         m_height= cfg.height > 0 ? cfg.height : 720;
         // yuv420p 与 x264 都要求宽高是偶数；奇数会在 avcodec_open2 里报
         // "Generic error in an external library"（完全看不出原因），所以这里直接向上取偶
-        if (m_width % 2)  { qWarning() << "[capture] 宽度" << m_width  << "是奇数，已向上取偶"; ++m_width;  }
-        if (m_height % 2) { qWarning() << "[capture] 高度" << m_height << "是奇数，已向上取偶"; ++m_height; }
+        if (m_width % 2)  { logWarn() << "[capture] 宽度" << m_width  << "是奇数，已向上取偶"; ++m_width;  }
+        if (m_height % 2) { logWarn() << "[capture] 高度" << m_height << "是奇数，已向上取偶"; ++m_height; }
         m_fps   = cfg.fps    > 0 ? cfg.fps    : 30;
         m_frame = av_frame_alloc();
         if (!m_frame) return false;
@@ -428,7 +428,7 @@ public:
         if (av_frame_get_buffer(m_frame, 32) < 0) return false;
 
         m_startTime = std::chrono::steady_clock::now();
-        qInfo().nospace() << "[capture] 合成源(testsrc) 启动: " << m_width << "x" << m_height
+        logInfo().nospace() << "[capture] 合成源(testsrc) 启动: " << m_width << "x" << m_height
                           << "@" << m_fps << " yuv420p（不需要任何硬件）";
         return true;
     }
@@ -559,7 +559,7 @@ public:
 
         const AVInputFormat* ifmt = av_find_input_format(cfg.inputFormat.c_str());
         if (!ifmt) {
-            qWarning() << "[capture] 找不到音频输入格式" << cfg.inputFormat.c_str();
+            logWarn() << "[capture] 找不到音频输入格式" << cfg.inputFormat.c_str();
             return false;
         }
 
@@ -585,7 +585,7 @@ public:
 
         int ret = avformat_open_input(&m_fmt, cfg.device.c_str(), ifmt, &opts);
         if (ret < 0) {
-            qWarning() << "[capture] 打不开音频设备" << cfg.device.c_str() << ":" << errStr(ret).c_str();
+            logWarn() << "[capture] 打不开音频设备" << cfg.device.c_str() << ":" << errStr(ret).c_str();
             if (opts) av_dict_free(&opts);
             m_fmt = nullptr;
             return false;
@@ -593,17 +593,17 @@ public:
         if (opts) {
             AVDictionaryEntry* e = nullptr;
             while ((e = av_dict_get(opts, "", e, AV_DICT_IGNORE_SUFFIX)) != nullptr)
-                qWarning() << "[capture] 音频设备忽略了参数:" << e->key << "=" << e->value;
+                logWarn() << "[capture] 音频设备忽略了参数:" << e->key << "=" << e->value;
             av_dict_free(&opts);
         }
 
         ret = avformat_find_stream_info(m_fmt, nullptr);
-        if (ret < 0) { qWarning() << "[capture] 音频 find_stream_info 失败:" << errStr(ret).c_str(); return false; }
+        if (ret < 0) { logWarn() << "[capture] 音频 find_stream_info 失败:" << errStr(ret).c_str(); return false; }
 
         const AVCodec* decoder = nullptr;
         m_audioStreamIndex = av_find_best_stream(m_fmt, AVMEDIA_TYPE_AUDIO, -1, -1, &decoder, 0);
         if (m_audioStreamIndex < 0 || !decoder) {
-            qWarning() << "[capture] 这个设备没有音频流:" << cfg.device.c_str();
+            logWarn() << "[capture] 这个设备没有音频流:" << cfg.device.c_str();
             return false;
         }
         AVStream* st = m_fmt->streams[m_audioStreamIndex];
@@ -618,13 +618,13 @@ public:
         avcodec_parameters_to_context(m_decCtx, par);
         m_decCtx->pkt_timebase = st->time_base;
         ret = avcodec_open2(m_decCtx, decoder, nullptr);
-        if (ret < 0) { qWarning() << "[capture] 音频 avcodec_open2 失败:" << errStr(ret).c_str(); return false; }
+        if (ret < 0) { logWarn() << "[capture] 音频 avcodec_open2 失败:" << errStr(ret).c_str(); return false; }
 
         m_decodedFrame = av_frame_alloc();
         m_packet       = av_packet_alloc();
         if (!m_decodedFrame || !m_packet) return false;
 
-        qInfo().nospace() << "[capture] 音频设备打开成功: " << cfg.device.c_str()
+        logInfo().nospace() << "[capture] 音频设备打开成功: " << cfg.device.c_str()
                           << "  实际 " << m_sampleRate << "Hz " << m_channels << "声道 "
                           << sampleName(m_sampleFmt).c_str();
         return true;
@@ -651,19 +651,19 @@ public:
             int ret = av_read_frame(m_fmt, m_packet);
             if (ret < 0) {
                 if (ret != AVERROR_EXIT)
-                    qWarning() << "[capture] 音频 av_read_frame 结束:" << errStr(ret).c_str();
+                    logWarn() << "[capture] 音频 av_read_frame 结束:" << errStr(ret).c_str();
                 return nullptr;
             }
             if (m_packet->stream_index != m_audioStreamIndex) { av_packet_unref(m_packet); continue; }
 
             ret = avcodec_send_packet(m_decCtx, m_packet);
             av_packet_unref(m_packet);
-            if (ret < 0) { qWarning() << "[capture] 音频 send_packet 失败:" << errStr(ret).c_str(); continue; }
+            if (ret < 0) { logWarn() << "[capture] 音频 send_packet 失败:" << errStr(ret).c_str(); continue; }
 
             while (true) {
                 ret = avcodec_receive_frame(m_decCtx, m_decodedFrame);
                 if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) break;
-                if (ret < 0) { qWarning() << "[capture] 音频 receive_frame 失败:" << errStr(ret).c_str(); break; }
+                if (ret < 0) { logWarn() << "[capture] 音频 receive_frame 失败:" << errStr(ret).c_str(); break; }
 
                 AVFrame* out = av_frame_alloc();
                 if (!out) return nullptr;
@@ -727,7 +727,7 @@ public:
         // 每次给 1024 个采样（48kHz 下约 21ms），和真实设备的分片大小一个量级
         m_samplesPerFrame = 1024;
         m_nextTime = std::chrono::steady_clock::now();
-        qInfo().nospace() << "[capture] 合成音频源(sine) 启动: " << m_sampleRate << "Hz "
+        logInfo().nospace() << "[capture] 合成音频源(sine) 启动: " << m_sampleRate << "Hz "
                           << m_channels << "声道 440Hz 正弦 s16（不需要麦克风）";
         return true;
     }
@@ -851,7 +851,7 @@ int listInputDevices(const std::string& inputFormat)
     ensureDeviceRegistered();
     const AVInputFormat* ifmt = av_find_input_format(inputFormat.c_str());
     if (!ifmt) {
-        qWarning() << "[devices] 找不到输入格式" << inputFormat.c_str()
+        logWarn() << "[devices] 找不到输入格式" << inputFormat.c_str()
                    << "；这份 FFmpeg 可能没编进该设备";
         return -1;
     }
@@ -861,11 +861,11 @@ int listInputDevices(const std::string& inputFormat)
     AVDeviceInfoList* list = nullptr;
     const int ret = avdevice_list_input_sources(ifmt, nullptr, nullptr, &list);
     if (ret < 0 || !list) {
-        qWarning() << "[devices] 枚举失败:" << errStr(ret).c_str();
+        logWarn() << "[devices] 枚举失败:" << errStr(ret).c_str();
         return ret;
     }
 
-    qInfo().nospace() << "[devices] " << inputFormat.c_str()
+    logInfo().nospace() << "[devices] " << inputFormat.c_str()
                       << " 共 " << list->nb_devices << " 个设备:";
     for (int i = 0; i < list->nb_devices; ++i) {
         const AVDeviceInfo* d = list->devices[i];
@@ -882,7 +882,7 @@ int listInputDevices(const std::string& inputFormat)
             if (d->media_types[0] == AVMEDIA_TYPE_VIDEO)      prefix = "video=";
             else if (d->media_types[0] == AVMEDIA_TYPE_AUDIO) prefix = "audio=";
         }
-        qInfo().nospace() << "  [" << i << "] " << prefix << human.c_str()
+        logInfo().nospace() << "  [" << i << "] " << prefix << human.c_str()
                           << (human == alt ? "" : ("   (备用名: " + alt + ")").c_str());
     }
     avdevice_free_list_devices(&list);
@@ -892,7 +892,7 @@ int listInputDevices(const std::string& inputFormat)
 bool saveFrameAsPpm(const AVFrame* yuv420pFrame, const std::string& path)
 {
     if (!yuv420pFrame || yuv420pFrame->format != AV_PIX_FMT_YUV420P) {
-        qWarning() << "[ppm] 只支持 yuv420p 输入";
+        logWarn() << "[ppm] 只支持 yuv420p 输入";
         return false;
     }
     const int w = yuv420pFrame->width, h = yuv420pFrame->height;
@@ -910,10 +910,10 @@ bool saveFrameAsPpm(const AVFrame* yuv420pFrame, const std::string& path)
     sws_freeContext(sws);
 
     FILE* fp = fopen(path.c_str(), "wb");
-    if (!fp) { qWarning() << "[ppm] 无法写文件:" << path.c_str(); return false; }
+    if (!fp) { logWarn() << "[ppm] 无法写文件:" << path.c_str(); return false; }
     fprintf(fp, "P6\n%d %d\n255\n", w, h);          // PPM 头：P6=二进制 RGB，紧接宽高和最大值
     fwrite(rgb.data(), 1, rgb.size(), fp);
     fclose(fp);
-    qInfo() << "[ppm] 已保存采集帧:" << path.c_str() << w << "x" << h;
+    logInfo() << "[ppm] 已保存采集帧:" << path.c_str() << w << "x" << h;
     return true;
 }

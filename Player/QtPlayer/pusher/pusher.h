@@ -127,9 +127,10 @@ private:
     // 这样以后加第三路流（比如录屏、第二路摄像头）时才不会悄悄串流。
     int m_videoStreamIndex = -1;
     int m_audioStreamIndex = -1;
-    // 用 shared_ptr + 原子读写：stop() 需要在"写出线程可能正在换掉它"的情况下安全地叫停它。
-    // 若是裸指针，就成了一个真实的数据竞争（可能 use-after-free）。
-    std::shared_ptr<IMuxer> m_muxer;
+    // muxer 只被写出线程碰（重连、写 trailer 都在那个线程里），所以 unique_ptr 就够。
+    // stop() 不碰这个指针，它只置 m_abortIo —— 叫停标志住在 Pusher 里，就不存在指针被换掉的竞态。
+    std::unique_ptr<IMuxer> m_muxer;
+    std::atomic<bool> m_abortIo{ false };   // 借给 muxer 的中断标志
 
     std::unique_ptr<PusherFrameQueue>  m_frameQueue;
     std::unique_ptr<PusherPacketQueue> m_packetQueue;

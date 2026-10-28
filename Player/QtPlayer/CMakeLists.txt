@@ -2,6 +2,15 @@ cmake_minimum_required(VERSION 3.16)
 
 project(QtPlayer VERSION 0.1 LANGUAGES CXX)
 
+# 源码是 UTF-8（含中文注释），而 Windows 默认代码页是 936(GBK)。
+# 链 Qt 的目标能顺带拿到 Qt INTERFACE 选项里的 /utf-8；**不链 Qt 的目标拿不到**（比如剥离 Qt 后的 op_pusher），
+# 于是 MSVC 按 GBK 去解 UTF-8 源码：先报 C4819，多字节序列里凑出引号/花括号后解析器跑偏，
+# 最终在系统头文件（ucrt/time.h、ctime）里报语法错误 —— 看起来毫不相关。
+# 所以在工程级加一次，以后抽 core（P2 的零 Qt 内核）时新目标也不会再踩。
+if(MSVC)
+    add_compile_options(/utf-8)
+endif()
+
 set(CMAKE_AUTOUIC ON)
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
@@ -157,8 +166,10 @@ add_executable(op_pusher
     pusher/muxer.h          pusher/muxer.cpp
 )
 target_include_directories(op_pusher PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(op_pusher PRIVATE Qt6::Core ffmpeg_deps)
-# target_link_libraries(op_pusher PRIVATE Qt6::Widgets Qt6::OpenGLWidgets)   # 本地预览用
+# op_pusher 已经完全不依赖 Qt：日志用 pusher/log.h，参数解析/计时/CSV/信号处理都是标准库。
+# 这也是 P2「core 零 Qt」的第一个可验证成果（dumpbin 里不会出现任何 Qt6*.dll）。
+target_link_libraries(op_pusher PRIVATE ffmpeg_deps)
+# 以后要做本地预览窗口，再单独给一个小目标链 Qt6::Widgets Qt6::OpenGLWidgets，别污染这个目标
 
 if(UNIX AND NOT APPLE)
     target_link_libraries(op_pusher PRIVATE Threads::Threads)

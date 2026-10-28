@@ -1,6 +1,6 @@
 #include "muxer.h"
 
-#include <QDebug>
+#include "log.h"
 
 extern "C" {
 #include <libavutil/opt.h>
@@ -49,25 +49,26 @@ public:
         close();
     }
 
-    bool open(const OutputConfig& cfg) override
+    bool open(const OutputConfig& cfg, std::atomic<bool>* abortFlag) override
     {
         close();
         m_cfg = cfg;
-        // 复位"叫停"标志：否则同一个对象被重新打开后，第一次写就会被中断回调打回去
-        m_abort.store(false);
+        // 借入编排层的叫停标志（为空则用自己的兜底标志），并复位它
+        m_abortFlag = abortFlag;
+        if (m_abortFlag) m_abortFlag->store(false);
 
         // ① 建输出上下文。format 为空时 FFmpeg 按 url 猜（.mp4 → mp4，rtmp:// → flv）
         int ret = avformat_alloc_output_context2(&m_out, nullptr,
                                                  cfg.format.empty() ? nullptr : cfg.format.c_str(),
                                                  cfg.url.c_str());
         if (ret < 0 || !m_out) {
-            qWarning() << "[muxer] avformat_alloc_output_context2 失败:" << errStr(ret).c_str();
+            logWarn() << "[muxer] avformat_alloc_output_context2 失败:" << errStr(ret).c_str();
             return false;
         }
 
         // ② 中断回调（网络输出时必须有；落盘时挂着也无害）
         m_out->interrupt_callback.callback = &interruptCb;
-        m_out->interrupt_callback.opaque   = &m_abort;
+        m_out->interrupt_callback.opaque   = m_abortFlag ? m_abortFlag : &m_abortSelf;
 
         // ③ 打开输出 IO。像 "null" 这类格式是 AVFMT_NOFILE，不需要 IO。
         if (!(m_out->oformat->flags & AVFMT_NOFILE)) {
@@ -80,12 +81,12 @@ public:
                              &m_out->interrupt_callback, &opts);
             if (opts) av_dict_free(&opts);
             if (ret < 0) {
-                qWarning() << "[muxer] 打不开输出" << cfg.url.c_str() << ":" << errStr(ret).c_str();
+                logWarn() << "[muxer] 打不开输出" << cfg.url.c_str() << ":" << errStr(ret).c_str();
                 return false;
             }
         }
 
-        qInfo().nospace() << "[muxer] 输出已打开: " << cfg.url.c_str()
+        logInfo().nospace() << "[muxer] 输出已打开: " << cfg.url.c_str()
                           << "  容器=" << m_out->oformat->name
                           << "  rw_timeout=" << cfg.rwTimeoutMs << "ms";
         return true;
@@ -114,7 +115,7 @@ public:
 
         // 把编码参数复制进流（注意是 copy，不是接管 par 的所有权）
         int ret = avcodec_parameters_copy(st->codecpar, par);
-        if (ret < 0) { qWarning() << "[muxer] avcodec_parameters_copy 失败:" << errStr(ret).c_str(); return nullptr; }
+        if (ret < 0) { logWarn() << "[muxer] avcodec_parameters_copy 失败:" << errStr(ret).c_str(); return nullptr; }
         st->codecpar->codec_tag = 0;    // 交给 muxer 自己决定 tag（mp4/flv 都需要）
 
         // 先按"输入的时间基"设一个初值；write_header 之后 muxer 可能改写它
@@ -123,7 +124,7 @@ public:
         // [重点] 记住进来的包用的是什么时间基，写包时要拿它做换算
         m_inTimeBases.push_back(timeBase);
 
-        qInfo().nospace() << "[muxer] 已建流 #" << (m_inTimeBases.size() - 1)
+        logInfo().nospace() << "[muxer] 已建流 #" << (m_inTimeBases.size() - 1)
                           << " codec=" << avcodec_get_name(par->codec_id)
                           << " 输入时间基=" << timeBase.num << "/" << timeBase.den;
         return st;
@@ -134,7 +135,7 @@ public:
         if (!m_out) return false;
         int ret = avformat_write_header(m_out, nullptr);
         if (ret < 0) {
-            qWarning() << "[muxer] avformat_write_header 失败:" << errStr(ret).c_str();
+            logWarn() << "[muxer] avformat_write_header 失败:" << errStr(ret).c_str();
             return false;
         }
         m_wroteHeader = true;
@@ -142,7 +143,7 @@ public:
         // 打印 header 之后每个流"真正"使用的时间基 —— 排查时间戳问题就看这一行
         for (unsigned i = 0; i < m_out->nb_streams; ++i) {
             const AVStream* st = m_out->streams[i];
-            qInfo().nospace() << "[muxer] 流 #" << i << " 输出时间基="
+            logInfo().nospace() << "[muxer] 流 #" << i << " 输出时间基="
                               << st->time_base.num << "/" << st->time_base.den
                               << "（输入是 " << m_inTimeBases[i].num << "/" << m_inTimeBases[i].den << "）";
         }
@@ -153,7 +154,7 @@ public:
     {
         if (!m_out || !m_wroteHeader || !pkt) return false;
         if (pkt->stream_index < 0 || static_cast<size_t>(pkt->stream_index) >= m_inTimeBases.size()) {
-            qWarning() << "[muxer] 包里的 stream_index 越界:" << pkt->stream_index;
+            logWarn() << "[muxer] 包里的 stream_index 越界:" << pkt->stream_index;
             return false;
         }
 
@@ -170,7 +171,7 @@ public:
             // 写失败 = 连接坏了。这里只做标记，收拾残局交给上层：
             // 推流线程看到 isOpen() 变 false 之后，会丢掉这个 muxer、重新建一个新的（顺带完成重连）。
             m_broken = true;
-            qWarning() << "[muxer] av_interleaved_write_frame 失败:" << errStr(ret).c_str();
+            logWarn() << "[muxer] av_interleaved_write_frame 失败:" << errStr(ret).c_str();
             return false;
         }
         ++m_packetsWritten;
@@ -186,27 +187,24 @@ public:
         // 撤销可能已经设上的"叫停"标志：abort() 是为了打断卡住的数据写，
         // 而 trailer 是收尾动作（mp4 的 moov 就在里面），必须让它认真写完 ——
         // 否则文件会直接打不开（这也是真实踩过的坑）。
-        m_abort.store(false);
+        if (m_abortFlag) m_abortFlag->store(false);
         const int ret = av_write_trailer(m_out);      // mp4 的 moov 箱就在这里写出去
         m_wroteTrailer = true;
         if (ret < 0)
-            qWarning() << "[muxer] av_write_trailer 失败:" << errStr(ret).c_str();
+            logWarn() << "[muxer] av_write_trailer 失败:" << errStr(ret).c_str();
         else
-            qInfo().nospace() << "[muxer] trailer 已写，共写入 " << m_packetsWritten << " 个包";
+            logInfo().nospace() << "[muxer] trailer 已写，共写入 " << m_packetsWritten << " 个包";
     }
 
     // 输出还活着吗？推流线程靠它决定"继续写"还是"重连"。
     bool isOpen() const override { return m_out && m_wroteHeader && !m_broken; }
 
-    // 只设一个原子标志：AVIOInterruptCB 会读它，FFmpeg 在阻塞的 I/O 里轮询，
-    // 所以从别的线程调用是安全的，而且不用干等 rw_timeout 到点。
-    void abort() override { m_abort.store(true); }
-
 private:
     OutputConfig             m_cfg;
     AVFormatContext*         m_out = nullptr;
     std::vector<AVRational>  m_inTimeBases;     // 每个流"输入"的时间基
-    std::atomic<bool>        m_abort{ false };
+    std::atomic<bool>*       m_abortFlag = nullptr;   // 借自编排层的中断标志
+    std::atomic<bool>        m_abortSelf{ false };    // 没借到时的兜底
     bool                     m_wroteHeader = false;
     bool                     m_wroteTrailer = false;
     bool                     m_broken = false;  // 写过一包失败（连接坏了），需要上层重建
@@ -218,6 +216,6 @@ private:
 std::unique_ptr<IMuxer> createMuxer(const OutputConfig& cfg)
 {
     // 以后加 SRT / HTTP-FLV / RTSP 输出，也都在这里按 cfg.format 分支
-    Q_UNUSED(cfg);
+    (void)cfg;
     return std::make_unique<FormatMuxer>();
 }

@@ -1,6 +1,8 @@
 #ifndef PUSHER_MUXER_H
 #define PUSHER_MUXER_H
 
+#include <atomic>
+
 /*
  * 封装 / 输出（mini-OBS 的 "output" 层）
  *
@@ -37,7 +39,8 @@ class IMuxer
 public:
     virtual ~IMuxer() = default;
 
-    virtual bool open(const OutputConfig& cfg) = 0;
+    // abortFlag 由编排层持有并传入，muxer 只借用指针（理由见 pusher.h 里的注释）
+    virtual bool open(const OutputConfig& cfg, std::atomic<bool>* abortFlag) = 0;
 
     // 视频/音频各调一次。
     // timeBase 是送进来的包用的时间基（= 编码器的 time_base）：muxer 要记住它，
@@ -56,9 +59,7 @@ public:
     // 输出是否还活着。写失败/掉线之后为 false，推流线程据此触发重连。
     virtual bool isOpen() const = 0;
 
-    // 叫停正在阻塞的网络写（关程序时用；rw_timeout 是第二道保险）。
-    // 只设置一个原子标志，由 AVIOInterruptCB 在读它，所以从别的线程调是安全的。
-    virtual void abort() = 0;
+    // 叫停网络写不再由 muxer 提供接口：标志由编排层持有，stop() 直接置位即可。
 };
 
 std::unique_ptr<IMuxer> createMuxer(const OutputConfig& cfg);
