@@ -20,7 +20,7 @@ jobs:
             build-essential cmake ninja-build pkg-config \
             qt6-base-dev qt6-multimedia-dev libgl1-mesa-dev \
             libavcodec-dev libavformat-dev libavutil-dev \
-            libswresample-dev libswscale-dev libavfilter-dev
+            libswresample-dev libswscale-dev libavfilter-dev libavdevice-dev
 
       # Linux 分支走 pkg-config 找 FFmpeg（见 CMakeLists 的 if(WIN32)/else()）
       - name: 配置
