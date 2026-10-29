@@ -449,9 +449,22 @@ AAC 每帧必须正好 1024 个采样，而设备每次给的样本数不固定�
 
 **Q41. 为什么要把核心和 Qt 解耦？**
 一是为了多端（Android 上不能用 Qt Widgets），二是为了可测试（core 可以脱离 GUI 跑单测），三是为了让 UI 层只管交互、不阻塞在 FFmpeg 调用上。判据很客观：`core/` 里 grep 不到 `#include <Q...>`。
+【已完成】这件事已经在一个目标上兑现：`op_pusher` 现在完全不依赖 Qt —— 日志用自写的 `pusher/log.h`（接口照 `QDebug` 抄，迁移只改函数名），参数解析/计时/CSV/信号处理都是标准库；`dumpbin` 里没有任何 `Qt6*.dll`。播放器那一半还在 Qt 上，是 P2 的剩余工作。
 
 **Q42. ijkplayer 的架构你是怎么借鉴的？**
-它把"状态机 + 消息队列"放在 core（`ffplayer.c` + `ff_ffmsg.c`），UI 层只是发命令、收事件（`IJKFFMoviePlayerController`）。我下一步就是把播放控制收敛成 `PlayerCore` 的状态机 + 显式消息队列，Qt 层只发命令。
+它把"状态机 + 消息队列"放在 core（`ffplayer.c` + `ff_ffmsg.c`），UI 层只是发命令、收事件（`IJKFFMoviePlayerController`）。我已经先拿推流器验证了"核心可以不依赖框架"这件事；播放器下一步就是把控制收敛成 `PlayerCore` 的状态机 + 显式消息队列，Qt 层只发命令。
+
+**Q45. muxer 为什么用 `unique_ptr` 而不是 `shared_ptr`？**
+因为叫停标志不再住在 muxer 里 —— 它由编排层持有（`std::atomic<bool> m_abortIo`），muxer 只借用它的指针，`stop()` 只需置位、不必安全地拿到 muxer 指针。于是 muxer 只被写出线程独占，裸所有权就够，`shared_ptr` + 原子 swap 那一套都不需要了。
+（反面教材：早先那版把标志放在 muxer 里，`stop()` 就必须跨线程读指针，只能上 `shared_ptr` 保命。结论：**把状态搬到正确的层，比加锁/加引用计数更有效**。）
+
+**Q46. 源码是 UTF-8（含中文注释）时，MSVC 要注意什么？**
+必须加 `/utf-8`。坑在于：链 Qt 的目标能顺带拿到 Qt INTERFACE 选项里的 `/utf-8`，**不链 Qt 的目标拿不到** —— 于是 MSVC 按代码页 936 解 UTF-8 源码，先报 C4819，多字节序列里凑出引号/花括号后解析器跑偏，**报错最终出现在系统头文件里**（`ucrt/time.h`、`ctime`），看起来毫不相关。
+解法：工程级 `if(MSVC) add_compile_options(/utf-8) endif()`，别让每个新目标各踩一次。
+
+**Q47. 怎么保证 CI 能抓到本地测不到的问题？**
+两条：一是**走用户真正会走的那条构建路径**做验证（我是手写 `cl.exe ... /utf-8` 验证的，所以 CMake 路径的坑一次没踩到，直到真机构建和 CI 才发现）；二是**改了 CMake 的依赖就必须同步改 CI 的依赖安装**（给采集加 `avdevice` 依赖时漏了 `libavdevice-dev`，CI 在配置阶段就死，报 `Package 'libavdevice' ... not found`）。
+本机依赖全、环境杂，这类"构建环境不一致"的问题基本只有 CI 能抓到 —— 所以 CI 红不是坏事，是它在干活。
 
 **Q43. 如果要支持 Android，哪些能复用？**
 core（demux/解码/队列/同步）原样交叉编译；渲染换成 `ANativeWindow`+EGL（三平面 `GL_RED` 上传几乎照搬），音频换 Oboe，解码可加 MediaCodec 硬解后端。
