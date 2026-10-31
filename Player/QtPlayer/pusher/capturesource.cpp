@@ -877,12 +877,19 @@ int listInputDevices(const std::string& inputFormat)
         const std::string human = d && d->device_description && *d->device_description
                                       ? d->device_description : alt;
         // 按类型给一个"可以直接粘到命令行"的写法：dshow 要求 input 名字形如 video=名字 / audio=名字
+        // 扫全部 media_types，而不是只看 [0]：有的设备 [0] 不是我们关心的类型，
+        // 有的设备 media_types 干脆为空（曾因此漏打 audio= 前缀，把使用者带偏）。
         const char* prefix = "";
-        if (inputFormat == "dshow" && d && d->nb_media_types > 0 && d->media_types) {
-            if (d->media_types[0] == AVMEDIA_TYPE_VIDEO)      prefix = "video=";
-            else if (d->media_types[0] == AVMEDIA_TYPE_AUDIO) prefix = "audio=";
+        bool typeKnown = false;
+        if (inputFormat == "dshow" && d && d->media_types) {
+            for (int t = 0; t < d->nb_media_types; ++t) {
+                if (d->media_types[t] == AVMEDIA_TYPE_VIDEO) { prefix = "video="; typeKnown = true; break; }
+                if (d->media_types[t] == AVMEDIA_TYPE_AUDIO) { prefix = "audio="; typeKnown = true; break; }
+            }
         }
-        logInfo().nospace() << "  [" << i << "] " << prefix << human.c_str()
+        const char* hint = (inputFormat == "dshow" && !typeKnown)
+                               ? "   (类型未知，可试 audio=名字 或 video=名字)" : "";
+        logInfo().nospace() << "  [" << i << "] " << prefix << human.c_str() << hint
                           << (human == alt ? "" : ("   (备用名: " + alt + ")").c_str());
     }
     avdevice_free_list_devices(&list);

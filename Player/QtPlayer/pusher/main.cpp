@@ -33,6 +33,7 @@
 #  define WIN32_LEAN_AND_MEAN
 #  define NOMINMAX                 // 不加这个，windows.h 的 min/max 宏会和 std 打架
 #  include <windows.h>
+#  include <shellapi.h>          // CommandLineToArgvW：命令行按 UTF-16 取，再显式转 UTF-8
 #else
 #  include <csignal>
 #  include <sys/resource.h>
@@ -166,7 +167,31 @@ int main(int argc, char** argv)
     o.videoFormat = defVideoFmt;
     o.audioFormat = defAudioFmt;
 
-    std::vector<std::string> args(argv + 1, argv + argc);
+    // [重点] 命令行参数的编码问题：
+    //   cmd 的代码页一般是 936(GBK)，argv 里的中文是"本地编码"字节；
+    //   而 FFmpeg/dshow 要的是 UTF-8（比如设备名 "麦克风 (UGREEN CM564 USB Audio )"）。
+    //   直接把 argv 交给 avformat_open_input 会把中文名字解成乱码，报 "Could not find ... device"。
+    //   所以 Windows 下从 UTF-16 命令行重新取参数，逐条转成 UTF-8。
+    std::vector<std::string> args;
+#ifdef _WIN32
+    {
+        int wargc = 0;
+        LPWSTR* wargv = CommandLineToArgvW(GetCommandLineW(), &wargc);
+        if (wargv) {
+            for (int k = 1; k < wargc; ++k) {
+                const int need = WideCharToMultiByte(CP_UTF8, 0, wargv[k], -1, nullptr, 0, nullptr, nullptr);
+                std::string s(need > 1 ? static_cast<size_t>(need - 1) : 0, '\0');
+                if (need > 1)
+                    WideCharToMultiByte(CP_UTF8, 0, wargv[k], -1, &s[0], need, nullptr, nullptr);
+                args.push_back(std::move(s));
+            }
+            LocalFree(wargv);
+        }
+    }
+#else
+    (void)argc;
+    args.assign(argv + 1, argv + argc);
+#endif
     for (size_t i = 0; i < args.size(); ++i) {
         std::string v;
         if (args[i] == "-h" || args[i] == "--help") { printUsage(); return 0; }

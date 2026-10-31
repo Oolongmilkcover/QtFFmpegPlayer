@@ -339,7 +339,7 @@ void VideoWidget::paintGL()
     if(ms >= 1000)
     {
         double realFps = m_realDrawCnt * 1000.0 / ms;
-        //qDebug() << "【屏幕真实渲染FPS】" << realFps;
+        qDebug() << "【屏幕真实渲染FPS】" << realFps;
         timer.restart();
         m_realDrawCnt = 0;
     }
