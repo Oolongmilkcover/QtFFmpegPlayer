@@ -69,6 +69,10 @@ private:
 
     double m_fps = 60;
 
+    int m_maxConsecutiveDrop = 5;
+
+    int m_lastAudio_pts = 0;
+
     // 倍速（视频帧时长 = 1000/fps/speed）
     std::atomic<double> m_speed{1.0};
 

@@ -331,41 +331,41 @@ void VideoRenderThread::run()
         qint64 compensate = 0;
         if (diff > SYNC_THRESHOLD) {
             compensate = qMin<qint64>((diff - SYNC_THRESHOLD) / 2, m_frameDurationMs);
+            if(m_lastAudio_pts == audioPts){
+                compensate = 0;
+            }
         } else if (diff < -SYNC_THRESHOLD) {
             compensate = qMax<qint64>((diff + SYNC_THRESHOLD) / 2, -m_frameDurationMs);
         }
+
+        m_lastAudio_pts = audioPts;
         qint64 renderStart = m_loopTimer.elapsed();
         //qDebug()<<"videoPts:"<<videoPts<<",audioPts:"<<audioPts<<",diff:"<<diff;
-        //视频超前
-        if (diff > SYNC_THRESHOLD || diff < -SYNC_THRESHOLD) //原50
+        //视频超前或者基本同步
+
+        if (diff >= -SYNC_THRESHOLD )
         {
+            m_maxConsecutiveDrop = 5;
             renderFrame(frame);
             qint64 renderCost = m_loopTimer.elapsed() - renderStart;
             m_frameQueue->next();
             qint64 target = nowWall + m_frameDurationMs - renderCost + compensate;
             sleepUntil(target);
-
-        }else
-        //视频稍微超前或者基本同步
-        if (diff >= -SYNC_THRESHOLD)  //50
-        {
-            renderFrame(frame);
-            qint64 renderCost = m_loopTimer.elapsed() - renderStart;
-            m_frameQueue->next();
-            qint64 target = nowWall + m_frameDurationMs - renderCost + compensate;
-            sleepUntil(target);
-
-            //-----------
-            //正常播放后再开始统计丢帧率
-            // if(loseFrameCount == -1 && readenCount == -1){
-            //     loseTimer.start();
-            //     qDebug()<<"开始计算5分钟内的丢帧数";
-            //     loseFrameCount = 0;
-            //     readenCount = 1;
-            // }
-            //-----------
-
-        }else{
+            if (diff > SYNC_THRESHOLD)
+            {
+                //-----------
+                //正常播放后再开始统计丢帧率
+                // if(loseFrameCount == -1 && readenCount == -1){
+                //     loseTimer.start();
+                //     qDebug()<<"开始计算5分钟内的丢帧数";
+                //     loseFrameCount = 0;
+                //     readenCount = 1;
+                // }
+                //-----------
+            }
+        }
+        //else
+        else{
             // 落后音频：丢帧
             //qDebug() << "落后音频：丢帧";
             //-----------
@@ -373,7 +373,15 @@ void VideoRenderThread::run()
             //     loseFrameCount++;
             // }
             //-----------
-            m_frameQueue->next();
+            if(m_maxConsecutiveDrop>0){
+                m_frameQueue->next();
+                m_maxConsecutiveDrop--;
+            }else{
+                m_maxConsecutiveDrop = 5;
+                renderFrame(frame);
+                m_frameQueue->next();
+            }
+
         }
     }
     qDebug() << "VideoRenderThread end...";
