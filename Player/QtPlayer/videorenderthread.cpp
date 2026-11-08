@@ -345,7 +345,7 @@ void VideoRenderThread::run()
 
         if (diff >= -SYNC_THRESHOLD )
         {
-            m_maxConsecutiveDrop = 5;
+            m_maxFrameDrop = 5;
             renderFrame(frame);
             qint64 renderCost = m_loopTimer.elapsed() - renderStart;
             m_frameQueue->next();
@@ -373,11 +373,11 @@ void VideoRenderThread::run()
             //     loseFrameCount++;
             // }
             //-----------
-            if(m_maxConsecutiveDrop>0){
+            if(m_maxFrameDrop>0){
                 m_frameQueue->next();
-                m_maxConsecutiveDrop--;
+                m_maxFrameDrop--;
             }else{
-                m_maxConsecutiveDrop = 5;
+                m_maxFrameDrop = 5;
                 renderFrame(frame);
                 m_frameQueue->next();
             }
