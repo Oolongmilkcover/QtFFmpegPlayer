@@ -65,6 +65,10 @@ set(OP_CORE_SOURCES
     core/audiothread.h      core/audiothread.cpp
     core/videodecodethread.h  core/videodecodethread.cpp
     core/videorenderthread.h  core/videorenderthread.cpp
+    core/messagequeue.h       core/messagequeue.cpp
+    core/messageloopthread.h  core/messageloopthread.cpp
+    core/playercore.h         core/playercore.cpp
+    core/playercontext.h      core/playercontext.cpp
 )
 
 # platform/  平台适配：Qt Multimedia 音频输出、QOpenGLWidget 视频渲染目标
