@@ -1,4 +1,4 @@
-#include "playlist.h"
+#include "app/playlist.h"
 #include "ui_playlist.h"
 #include <QMenu>
 #include <QContextMenuEvent>

@@ -248,24 +248,24 @@
   <customwidget>
    <class>VideoWidget</class>
    <extends>QOpenGLWidget</extends>
-   <header>videowidget.h</header>
+   <header>platform/videowidget.h</header>
   </customwidget>
   <customwidget>
    <class>CtrlBar</class>
    <extends>QWidget</extends>
-   <header>ctrlbar.h</header>
+   <header>app/ctrlbar.h</header>
    <container>1</container>
   </customwidget>
   <customwidget>
    <class>TopMenu</class>
    <extends>QWidget</extends>
-   <header>topmenu.h</header>
+   <header>app/topmenu.h</header>
    <container>1</container>
   </customwidget>
   <customwidget>
    <class>PlayList</class>
    <extends>QWidget</extends>
-   <header>playlist.h</header>
+   <header>app/playlist.h</header>
    <container>1</container>
   </customwidget>
  </customwidgets>

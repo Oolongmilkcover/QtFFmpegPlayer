@@ -553,7 +553,7 @@
   <customwidget>
    <class>mySlider</class>
    <extends>QSlider</extends>
-   <header>myslider.h</header>
+   <header>app/myslider.h</header>
   </customwidget>
  </customwidgets>
  <resources/>

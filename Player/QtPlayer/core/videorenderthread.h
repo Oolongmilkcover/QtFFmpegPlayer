@@ -1,22 +1,28 @@
 #ifndef VIDEORENDERTHREAD_H
 #define VIDEORENDERTHREAD_H
 
-#include <QThread>
+#include <thread>
 #include <atomic>
 #include <QElapsedTimer>
-#include "framequeue.h"
+#include "core/framequeue.h"
 
 class VideoWidget;
-class VideoRenderThread : public QThread
+/*
+ * 渲染线程：按音频时钟把解码好的帧送上屏。
+ *
+ * 它不再继承 QThread（P2：core 去 QThread）：
+ * 线程本体由自己持有的 std::thread 管理，start()/stop() 成对，
+ * isRunning() 语义同原来的 QThread::isRunning()。
+ */
+class VideoRenderThread
 {
-    Q_OBJECT
 private:
     QElapsedTimer m_loopTimer;
     bool firstFrame = true;
 public:
 
     explicit VideoRenderThread(FrameQueue* frameQueue);
-    ~VideoRenderThread() override;
+    ~VideoRenderThread();
     //设置VideoWidget
     void setWidget(VideoWidget* widget);
     //设置视频帧率
@@ -44,6 +50,9 @@ public:
     void stop();
     void resetFrameClock();
     void restart();
+    // 创建渲染线程（std::thread）；stop() 负责 join
+    void start();
+    bool isRunning() const { return m_running.load(); }
 
     std::atomic<bool> playDone = false;
 
@@ -53,7 +62,7 @@ public:
 
 protected:
 
-    void run() override;
+    void run();
 
 private:
 
@@ -82,6 +91,10 @@ private:
     std::atomic<bool> m_isPause = false;
 
     std::atomic<bool> m_isExit = false;
+
+    // 渲染线程本体；m_running 由 run() 首尾维护，语义同原来的 QThread::isRunning()
+    std::thread m_thread;
+    std::atomic<bool> m_running{false};
 
     //待执行的逐帧请求次数
     std::atomic<int> m_stepReq{0};

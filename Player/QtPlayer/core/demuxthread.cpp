@@ -1,8 +1,8 @@
-#include "demuxthread.h"
-#include "audiothread.h"
-#include "videodecodethread.h"
-#include "videorenderthread.h"
-#include "videowidget.h"
+#include "core/demuxthread.h"
+#include "core/audiothread.h"
+#include "core/videodecodethread.h"
+#include "core/videorenderthread.h"
+#include "platform/videowidget.h"
 #include <QDebug>
 
 extern "C" {
@@ -275,7 +275,7 @@ void DemuxThread::start()
     std::lock_guard<std::mutex> lock(m_mutex);
     QThread::start();
     if (m_hasVideo && m_videoDecodeThread) m_videoDecodeThread->start();
-    if (m_hasAudio && m_audioThread) m_audioThread->start();//启动两个子线程
+    if (m_hasAudio && m_audioThread) m_audioThread->startAudio();//启动两个子线程
 
 }
 

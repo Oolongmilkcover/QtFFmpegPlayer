@@ -1,4 +1,4 @@
-#include "decodethread.h"
+#include "core/decodethread.h"
 #include <QDebug>
 extern "C"
 {
@@ -6,8 +6,7 @@ extern "C"
 
 }
 
-DecodeThread::DecodeThread(QObject *parent)
-    : QThread{parent}
+DecodeThread::DecodeThread()
 {
 
 }
@@ -15,7 +14,7 @@ DecodeThread::DecodeThread(QObject *parent)
 DecodeThread::~DecodeThread()
 {
     setExit(true); // 析构时才设为 true
-    wait();
+    // 线程归子类所有：VideoDecodeThread::close() / AudioThread::close() 里已经 join
     close();
     qDebug()<<"~DecodeThread";
 }

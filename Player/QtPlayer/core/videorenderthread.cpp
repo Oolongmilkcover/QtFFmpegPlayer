@@ -1,5 +1,5 @@
-#include "videorenderthread.h"
-#include "videowidget.h"
+#include "core/videorenderthread.h"
+#include "platform/videowidget.h"
 extern "C"
 {
 #include <libavutil/frame.h>
@@ -7,6 +7,8 @@ extern "C"
 #include <QDebug>
 #include <QMetaObject>
 #include <QPointer>
+#include <chrono>
+#include <thread>
 
 #define SPIN_THRESHOLD_MS 2
 #define SYNC_THRESHOLD 30
@@ -75,9 +77,14 @@ void VideoRenderThread::stop()
         m_frameQueue->abort();
     }
 
-    if (isRunning())
+    /*
+     * 只要线程对象存在就 join：
+     * 线程可能已经因为队列 abort 自行退出（m_running 已经是 false），
+     * 这时也必须 join，否则 std::thread 析构时会 std::terminate。
+     */
+    if (m_thread.joinable())
     {
-        wait();
+        m_thread.join();
     }
 }
 
@@ -91,6 +98,20 @@ void VideoRenderThread::restart()
 {
     m_isExit = false;
     if (!isRunning()) start();
+}
+
+void VideoRenderThread::start()
+{
+    // 上一轮线程已经退出但没 join：先收掉，再起新线程
+    if (m_thread.joinable())
+    {
+        m_thread.join();
+    }
+    m_running.store(true);
+    m_thread = std::thread([this]() {
+        run();
+        m_running.store(false);
+    });
 }
 
 void VideoRenderThread::requestStep(int delta)
@@ -201,12 +222,12 @@ void VideoRenderThread::run()
                         m_firstFrame = true;
                     }
                     delete frame;
-                    msleep(1);
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
                 }
                 else
                 {
                     //解码还没跟上：请求留着，稍后重试
-                    msleep(5);
+                    std::this_thread::sleep_for(std::chrono::milliseconds(5));
                 }
                 continue;
             }
@@ -226,7 +247,7 @@ void VideoRenderThread::run()
                         m_firstFrame = true;
                     }
                     delete frame;
-                    msleep(1);
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
                 }
                 else
                 {
@@ -236,11 +257,11 @@ void VideoRenderThread::run()
                         m_stepReq.fetch_add(1);
                     }
                     //StepNeedRefill / StepEmpty：回填或解码还没跟上，保留请求下一轮再试
-                    msleep(5);
+                    std::this_thread::sleep_for(std::chrono::milliseconds(5));
                 }
                 continue;
             }
-            msleep(5);
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
             continue;
         }
 
@@ -387,7 +408,7 @@ void VideoRenderThread::run()
     qDebug() << "VideoRenderThread end...";
 }
 
-const qint64 SLEEP_GRANULARITY = 15;   // Windows msleep 粒度
+const qint64 SLEEP_GRANULARITY = 15;   // Windows 睡眠粒度
 void VideoRenderThread::sleepUntil(qint64 targetWallMs)
 {
     while (!m_isExit)
@@ -404,11 +425,11 @@ void VideoRenderThread::sleepUntil(qint64 targetWallMs)
         if (remain > targetWallMs) break;
         if (remain > SLEEP_GRANULARITY + SPIN_THRESHOLD_MS)
         {
-            msleep(remain - SPIN_THRESHOLD_MS);
+            std::this_thread::sleep_for(std::chrono::milliseconds(remain - SPIN_THRESHOLD_MS));
         }
         else
         {
-            QThread::yieldCurrentThread();
+            std::this_thread::yield();
         }
     }
 }

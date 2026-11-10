@@ -1,4 +1,4 @@
-#include "audioplayer.h"
+#include "platform/audioplayer.h"
 #include <QAudioSink>
 #include <QAudioDevice>
 #include <QAudioFormat>

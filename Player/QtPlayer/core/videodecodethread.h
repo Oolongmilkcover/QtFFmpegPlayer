@@ -8,11 +8,10 @@
 #ifndef VIDEODECODETHREAD_H
 #define VIDEODECODETHREAD_H
 
-#include "decodethread.h"
+#include "core/decodethread.h"
 
 
-
-#include <QObject>
+#include <thread>
 #include <atomic>
 #include <deque>
 #include <functional>
@@ -21,7 +20,6 @@ class VideoWidget;
 class VideoRenderThread;
 class VideoDecodeThread : public DecodeThread
 {
-    Q_OBJECT
 public:
     //同步时间，由外部传入
     void setSynpts(long long synpts);
@@ -42,7 +40,7 @@ public:
     //paint
     void paint(AVFrame* frame);
 
-    void run() override;
+    void run();
 
     //设置“还有视频未播放”
     void setLastSome(bool lastSome);
@@ -72,6 +70,10 @@ public:
 
     // 重启解码线程
     void restart();
+
+    // 启动/等待解码线程（std::thread）
+    void start();
+    void wait();
 
     /*
      * 清 FrameQueue 前后用来"停稳消费者"的一对函数（成对使用）：
@@ -115,6 +117,10 @@ public:
     std::atomic<long long> refillBoundaryPts{-1};
 
 private:
+    // 解码线程：run() 的 std::thread 版本（渲染线程由 VideoRenderThread 自己持有）
+    std::thread m_decodeThread;
+    // 线程是否在跑（start() 幂等用，避免重复 start 时自己 join 自己）
+    std::atomic<bool> m_running{false};
     std::atomic<bool> m_isPause = false;
     VideoWidget* m_widget = nullptr;
     //视频渲染线程  framequeue消费者

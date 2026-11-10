@@ -1,4 +1,4 @@
-#include "framequeue.h"
+#include "core/framequeue.h"
 #include <algorithm>
 #include <QDebug>
 

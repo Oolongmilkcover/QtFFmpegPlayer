@@ -1,4 +1,4 @@
-#include "player.h"
+#include "app/player.h"
 
 #include <QApplication>
 

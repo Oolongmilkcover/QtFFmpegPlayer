@@ -1,6 +1,7 @@
-#include "audiothread.h"
+#include "core/audiothread.h"
 #include <QDebug>
 #include <algorithm>
+#include <chrono>
 extern"C"{
 #include "libavcodec/codec_par.h"
 #include "libavcodec/avcodec.h"
@@ -179,11 +180,6 @@ long long AudioThread::getPts()
     pts.store(clock);
     // qDebug()<<"clock"<<clock;
     return clock;
-}
-
-void AudioThread::run()
-{
-    startAudio();
 }
 
 void AudioThread::setSerial(int serial)
@@ -397,7 +393,7 @@ void AudioThread::decodeRun()
                 }
             }
         }
-        msleep(1);
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
     qDebug() << "Audio decode thread end...";
 }
@@ -410,7 +406,7 @@ void AudioThread::playRun()
     {
         if (m_isPause.load())
         {
-            msleep(1);
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
             continue;
         }
         Frame *frame = m_frameQue->getReadable();
@@ -463,7 +459,7 @@ void AudioThread::playRun()
         while (!m_isExit)
         {
             if(m_isPause){
-                msleep(3);
+                std::this_thread::sleep_for(std::chrono::milliseconds(3));
                 continue;
             }
             int remain = dataSize - writtenTotal;
@@ -474,7 +470,7 @@ void AudioThread::playRun()
 
             if (freeSize <= 0)
             {
-                msleep(1);
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
                 continue;
             }
 
@@ -487,7 +483,7 @@ void AudioThread::playRun()
 
             if (written <= 0)
             {
-                msleep(1);
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
                 continue;
             }
 

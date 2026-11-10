@@ -1,4 +1,4 @@
-#include "videowidget.h"
+#include "platform/videowidget.h"
 #include <QDebug>
 #include <QOpenGLContext>
 #include <QTimer>
@@ -6,7 +6,7 @@
 #include<sstream>
 #include<iostream>
 #include<QFile>
-#include "perfclock.h"
+#include "core/perfclock.h"
 #include <QElapsedTimer>
 extern "C" {
 #include <libavutil/frame.h>

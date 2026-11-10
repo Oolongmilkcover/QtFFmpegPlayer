@@ -1,8 +1,8 @@
 #ifndef AUDIOTHREAD_H
 #define AUDIOTHREAD_H
 
-#include "audioplayer.h"
-#include "decodethread.h"
+#include "platform/audioplayer.h"
+#include "core/decodethread.h"
 
 #include <thread>
 #include <atomic>
@@ -11,10 +11,8 @@
 class SwrContext;
 struct AVFilterGraph;
 struct AVFilterContext;
-class AudioThread : public DecodeThread
+class AudioThread :public DecodeThread
 {
-    Q_OBJECT
-
 public:
     explicit AudioThread(int frameQueSizeize = 100 , bool keep_last = false);
     ~AudioThread();
@@ -38,8 +36,6 @@ public:
 
     // 获取当前音频时钟
     long long getPts();
-
-    void run();
 
     void setSerial(int serial);
 

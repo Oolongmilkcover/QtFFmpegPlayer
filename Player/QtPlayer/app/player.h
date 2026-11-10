@@ -1,10 +1,10 @@
 #ifndef PLAYER_H
 #define PLAYER_H
-#include "demuxthread.h"
+#include "core/demuxthread.h"
 #include <QElapsedTimer>
 #include <QListWidgetItem>
 #include <QWidget>
-#include "perfclock.h"
+#include "core/perfclock.h"
 QT_BEGIN_NAMESPACE
 namespace Ui {
 class Player;

@@ -1,4 +1,4 @@
-#include "packetqueue.h"
+#include "core/packetqueue.h"
 
 #include <QDebug>
 

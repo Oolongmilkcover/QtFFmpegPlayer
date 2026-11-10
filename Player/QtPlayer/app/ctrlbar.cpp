@@ -1,4 +1,4 @@
-#include "ctrlbar.h"
+#include "app/ctrlbar.h"
 #include "ui_ctrlbar.h"
 #include<QDebug>
 #include<QMenu>

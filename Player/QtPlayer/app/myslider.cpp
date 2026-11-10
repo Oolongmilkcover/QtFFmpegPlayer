@@ -1,4 +1,4 @@
-#include "myslider.h"
+#include "app/myslider.h"
 
 #include <QMouseEvent>
 

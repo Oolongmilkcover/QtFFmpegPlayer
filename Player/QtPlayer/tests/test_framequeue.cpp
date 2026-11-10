@@ -8,7 +8,7 @@
  * 覆盖：前进 / 后退 / 历史耗尽触发回填 / 回填后无缝接续 / 到文件开头 /
  *       回填失败不再重复请求 / 历史容量与淘汰 / 清空。
  */
-#include "framequeue.h"
+#include "core/framequeue.h"
 
 #include <cstdio>
 #include <cassert>

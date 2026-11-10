@@ -7,20 +7,27 @@
 #ifndef DECODETHREAD_H
 #define DECODETHREAD_H
 
-#include <QThread>
+#include <atomic>
 #include<mutex>
-#include "framequeue.h"
-#include"packetqueue.h"
+#include "core/framequeue.h"
+#include "core/packetqueue.h"
 class AVCodec;
 class AVCodecContext;
 class AVPacket;
 class AVFrame;
 class AVCodecParameters;
-class DecodeThread : public QThread
+/*
+ * 解码器助手：包队列 / 帧队列 / 解码器初始化与收发。
+ *
+ * 它不再负责线程（原先是 QThread 子类）：
+ *   - 视频解码线程由 VideoDecodeThread 自己持有；
+ *   - 音频解码/播放线程由 AudioThread 自己持有（一直是 std::thread）。
+ * 这样基类只依赖 FFmpeg + 标准库，便于后续 core 化。
+ */
+class DecodeThread
 {
-    Q_OBJECT
 public:
-    explicit DecodeThread(QObject *parent = nullptr);
+    DecodeThread();
     virtual ~DecodeThread();
     //将pkt加入队列
     void push(AVPacket *pkt,int serial);
@@ -58,7 +65,6 @@ public:
 public:
     //当前的pts
     std::atomic<long long> pts = {0};
-signals:
 
 protected:
     //队列最大容量

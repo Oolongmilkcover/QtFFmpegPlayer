@@ -1,12 +1,15 @@
-#include "videodecodethread.h"
-#include "videorenderthread.h"
-#include"videowidget.h"
+#include "core/videodecodethread.h"
+#include "core/videorenderthread.h"
+#include "platform/videowidget.h"
+
 extern"C"{
 #include "libavutil/frame.h"
 #include "libavcodec/packet.h"
 #include "libavcodec/avcodec.h"
 }
 #include <QDebug>
+#include <chrono>
+#include <thread>
 
 //一次回填最多保留多少帧（必须明显小于历史队列容量）
 static constexpr int kRefillKeepFrames = 16;
@@ -49,6 +52,30 @@ VideoDecodeThread::~VideoDecodeThread()
     m_pktQue  = nullptr;
     delete m_frameQue;
     m_frameQue = nullptr;
+}
+
+void VideoDecodeThread::start()
+{
+    // 已经在跑：和 QThread::start() 一样直接返回（否则会 join 自己）
+    if (m_running.load()) {
+        return;
+    }
+    // 上一轮线程已经退出但没来得及 join：先收掉，再起新线程
+    if (m_decodeThread.joinable()) {
+        m_decodeThread.join();
+    }
+    m_running.store(true);
+    m_decodeThread = std::thread([this]() {
+        run();
+        m_running.store(false);
+    });
+}
+
+void VideoDecodeThread::wait()
+{
+    if (m_decodeThread.joinable()) {
+        m_decodeThread.join();
+    }
 }
 
 bool VideoDecodeThread::open(VideoWidget *widget, int width, int height,AVStream* videoStream)
@@ -161,7 +188,7 @@ void VideoDecodeThread::run()
     while(!m_isExit){
         if (m_isPause.load())
         {
-            msleep(5);
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
             continue;
         }
         // 消费packet 生产frame
@@ -170,7 +197,7 @@ void VideoDecodeThread::run()
         auto packet = m_pktQue->pop();
         if (!packet) {
             if (m_isExit) break;
-            msleep(1);
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
             continue;
         }
         int pktSerial = packet->m_serial;
@@ -217,7 +244,7 @@ void VideoDecodeThread::run()
             //告诉帧队列填充完毕
             m_frameQue->push();
         }
-        msleep(1);
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
     qDebug() << "VideoDecodeThread end...";
 }
