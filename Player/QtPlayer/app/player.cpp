@@ -72,7 +72,7 @@ Player::Player(QWidget *parent)
     //开始与暂停按钮控制
     connect(ui->ctrlbar, &CtrlBar::play, this,&Player::play);
     connect(ui->ctrlbar, &CtrlBar::pause, this,&Player::pause);
-    connect(&dt,&DemuxThread::needPause,this,&Player::pause);
+    //temp connect(&dt,&DemuxThread::needPause,this,&Player::pause);
     connect(ui->ctrlbar, &CtrlBar::setVolume, this,&Player::setVolume);
     connect(this,&Player::setPausePicture,ui->ctrlbar, &CtrlBar::setPausePictrue);
     //停止播放
@@ -357,13 +357,13 @@ void Player::playFile(const QString &path)
      * 流媒体：把快进/快退/逐帧/倍速/上下集这些入口整体关掉（按钮 + 快捷键 + 进度条），
      * 换回本地视频时这里会重新判定并自动恢复。
      */
-    ui->ctrlbar->setStreamMode(dt.isStreamMedia());
-    if (dt.isStreamMedia() && m_speed != 1.0) {
-        //倍速已经被 DemuxThread::openFile 强制拉回 1.0，标签也得跟着回到 1.0，
-        //否则界面写着 2.0x、实际按 1.0x 播，而倍速按钮又是灰的，用户无从判断。
-        m_speed = 1.0;
-        ui->ctrlbar->setSpeedLabel(m_speed);
-    }
+    //tempui->ctrlbar->setStreamMode(dt.isStreamMedia());
+    //tempif (dt.isStreamMedia() && m_speed != 1.0) {
+    //temp    //倍速已经被 DemuxThread::openFile 强制拉回 1.0，标签也得跟着回到 1.0，
+    //temp    //否则界面写着 2.0x、实际按 1.0x 播，而倍速按钮又是灰的，用户无从判断。
+    //temp    m_speed = 1.0;
+    //temp    ui->ctrlbar->setSpeedLabel(m_speed);
+    //temp}
     // 重置滑块状态，避免之前操作的影响
     isSliderPress = false;                 // 清除按下标志
     // 换文件时丢弃上一次遗留的待生效 seek 与去抖定时器
@@ -390,15 +390,15 @@ void Player::playFile(const QString &path)
     }else{
         pause();
     }
-    if (!dt.hasVideo()) {
-        ui->video->clearScreen();   // 纯音频：黑屏
-    }
+    //tempif (!dt.hasVideo()) {
+    //temp    ui->video->clearScreen();   // 纯音频：黑屏
+    //temp}
 }
 
 void Player::playNext()
 {
     //流媒体不支持上下集（播完也不会自动切，见 DemuxThread::run 的 EOF 分支）
-    if(dt.isStreamMedia()) return;
+    //tempif(dt.isStreamMedia()) return;
     QListWidget *list = ui->playList->getListWidget();
     if (list->count() == 0) return;
     ui->playList->next();                              // 环形选中下一行
@@ -409,7 +409,7 @@ void Player::playNext()
 void Player::playPrev()
 {
     //流媒体不支持上下集
-    if(dt.isStreamMedia()) return;
+    //tempif(dt.isStreamMedia()) return;
     QListWidget *list = ui->playList->getListWidget();
     if (list->count() == 0) return;
     ui->playList->prev();                              // 环形选中上一行
@@ -443,7 +443,7 @@ void Player::rewindSeekFiveSec()
 void Player::queueSeekBy(long long deltaMs)
 {
     //流媒体不支持快进/快退（DemuxThread::requestSeekMs 里还有一道闸门兜底）
-    if(!m_isInit || dt.isStreamMedia() || dt.m_seekPauseing.load()) return;
+    //tempif(!m_isInit || dt.isStreamMedia() || dt.m_seekPauseing.load()) return;
     //逐帧中快进/快退：先退出逐帧（位置会对齐）
     exitStepFrame();
 
@@ -479,7 +479,7 @@ void Player::stepFrame(int mode)
 {
     if(!m_isInit) return;
     //流媒体没有"上一帧/下一帧"这个概念（底层也回退不了），不进入逐帧模式
-    if(dt.isStreamMedia()) return;
+    //tempif(dt.isStreamMedia()) return;
     //上一帧 / 下一帧：进入逐帧模式（暂停渲染，解码继续）
     bool success = false;
     if(mode == 1){
@@ -526,7 +526,7 @@ void Player::adjustVolume(double delta)
 void Player::changeSpeed(double delta)
 {
     //流媒体不支持倍速（DemuxThread::setSpeed 里还有一道闸门兜底）
-    if(dt.isStreamMedia()) return;
+    //tempif(dt.isStreamMedia()) return;
     double newSpeed = m_speed + delta;
     if (newSpeed < 0.5) newSpeed = 0.5;
     if (newSpeed > 2.0)  newSpeed = 2.0;

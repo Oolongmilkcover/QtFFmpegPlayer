@@ -1,6 +1,6 @@
 #ifndef PLAYERCORE_H
 #define PLAYERCORE_H
-
+class PlayerContext;
 class MessageLoopThread;
 
 class PlayerCore
@@ -10,7 +10,13 @@ public:
 
 
 private:
+    void setMessageHandler();
+
+private:
     MessageLoopThread* m_loop;
+
+
+    PlayerContext* m_playerctx;
 
 };
 

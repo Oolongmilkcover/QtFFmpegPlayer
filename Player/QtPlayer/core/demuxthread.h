@@ -7,6 +7,7 @@
 获取：宽、高、帧率、总时长
 Seek 功能 
 */
+#include "core/playercontext.h"
 #include "core/perfclock.h"
 #include "libavutil/rational.h"
 #include <QSet>
@@ -17,12 +18,21 @@ class VideoDecodeThread;
 class AudioThread;
 class VideoWidget;
 class AVPacket;
+class PlayerContext;
+class MessageQueue;
 class DemuxThread : public QThread
 {
     Q_OBJECT
 public:
     explicit DemuxThread(QObject *parent = nullptr);
     ~DemuxThread();
+
+    //设置与PlayerCore共享的上下文 只允许访问  要修改得返回信息到PlayerCore由他修改
+    void setPlayerContext(PlayerContext* ctx);
+    //设置上报信息队列
+    void setMessageQueue(MessageQueue* msgQue);
+
+
     //打开文件
     bool openFile(const char* url,VideoWidget* widget);
     
@@ -41,7 +51,7 @@ public:
     //回放上一帧
     bool stepPrevFrame();
     //是否处于逐帧状态
-    bool isFrameStep() const { return m_isFrameStep.load(); }
+    //bool isFrameStep() const;
 
 
     //跳转（pos = 0.0~1.0）
@@ -96,7 +106,7 @@ public:
     void setSpeed(double speed);
 
     //是否有视频流
-    bool hasVideo() const { return m_hasVideo; }
+    //bool hasVideo() const { return m_hasVideo; }
 
     /*
      * 本次打开的是不是网络流媒体（按 URL 的 "协议://" 判定，见 demuxthread.cpp 的 isStreamUrl）。
@@ -105,7 +115,7 @@ public:
      * "能 seek / 时长确定 / 能重定位到某一帧"之上，直播流一个都不满足。
      * 每次 openFile 按新 URL 重新判定、close() 复位，所以换回本地视频后自动恢复可用。
      */
-    bool isStreamMedia() const { return m_isStreamMedia.load(); }
+    //bool isStreamMedia() const { return m_isStreamMedia.load(); }
 
     std::atomic<bool> m_seekPauseing = false;
 
@@ -114,12 +124,18 @@ private slots:
 
     void videoCallSeek(long long ms);
 signals:
+
     void disableBtn();
     void ableBtn();
-    // void moveSlider(long long pts);
     void playNext();
-    void needPause();
+
 private:
+
+    //共同上下文
+    PlayerContext* m_playerctx = nullptr;
+    //上报信息队列
+    MessageQueue* m_msgQue = nullptr;
+
     AVRational m_audioTimebase{};
     AVRational m_videoTimebase{};
 
@@ -136,9 +152,9 @@ private:
     AVPacket* m_pendingPkt = nullptr;
 
     //是否暂停
-    std::atomic<bool> m_isPause = false;
+    //std::atomic<bool> m_isPause = false;
     //是否退出
-    std::atomic<bool>  m_isExit = false;
+    //std::atomic<bool>  m_isExit = false;
     //解封装上下文
     AVFormatContext* m_fmt_ctx = nullptr;
     //配置
@@ -162,9 +178,9 @@ private:
     std::atomic<bool> isCompleteInit = false;
 
     //异步seek
-    std::atomic<bool> m_isSeeking = false;
+    //std::atomic<bool> m_isSeeking = false;
     //seek目标（毫秒）
-    std::atomic<long long> m_seekMs = 0;
+    //std::atomic<long long> m_seekMs = 0;
 
     std::atomic<bool> m_eof = false;
 
@@ -172,10 +188,10 @@ private:
     std::atomic<int> m_serial = 0;
 
     //主程序是否有播放列表
-    std::atomic<bool> m_hasPlayList = false;
+    //std::atomic<bool> m_hasPlayList = false;
 
     //是否在逐帧
-    std::atomic<bool> m_isFrameStep = false;
+    //std::atomic<bool> m_isFrameStep = false;
     //进入逐帧之前的暂停状态（退出逐帧时恢复）
     std::atomic<bool> m_pauseBeforeStep = false;
     //正在处理的 seek 结束后应该恢复成什么暂停状态
@@ -214,7 +230,7 @@ private:
         "tta"
     };
 
-    std::atomic<double> m_speed{1.0};
+    //std::atomic<double> m_speed{1.0};
 };
 
 #endif // DEMUXTHREAD_H

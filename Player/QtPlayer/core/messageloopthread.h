@@ -1,11 +1,8 @@
 #ifndef MESSAGELOOPTHREAD_H
 #define MESSAGELOOPTHREAD_H
-
 #include <thread>
 #include <atomic>
 #include <functional>
-//#include "core/messagequeue.h"
-
 class PlayerMessage;
 class MessageQueue;
 

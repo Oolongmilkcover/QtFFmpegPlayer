@@ -112,6 +112,7 @@ private:
     std::atomic<double> m_desiredSpeed{1.0};
     // 滤镜当前速度（解码线程读写）
     std::atomic<double> m_currentSpeed{1.0};
+
     // 滤镜图
     AVFilterGraph   *m_filterGraph   = nullptr;
     // 源滤镜（喂数据）

@@ -88,7 +88,7 @@ bool MessageQueue::pop(PlayerMessage& outMsg, bool block)
     }
 
     if (m_abort) return false;
-    if (m_nb == 0) return false;
+    if (m_nb== 0) return false;
 
     //取头节点
     MessageNode* node  = m_first;
