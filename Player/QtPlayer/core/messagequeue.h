@@ -8,12 +8,15 @@ enum PlayerCmd {
     CMD_OPEN        = 1,               // arg1=0, obj=std::string*(路径/URL)；成功后发 EVT_PREPARED
     CMD_PLAY,                          // 开始/恢复播放（内部按状态机判断 PREPARED→STARTED / PAUSED→STARTED）
     CMD_PAUSE,                         // STARTED→PAUSED
-    CMD_SEEK,                          // arg1=目标毫秒；完成后发 EVT_SEEK_DONE
+    CMD_SEEK,                          // 用arg1和arg2拆分int64为高位和低位 arg1=目标毫秒；完成后发 EVT_SEEK_DONE
+    CMD_SET_VOLUME,                    // 设置音量 arg1 = pos*100
     CMD_STEP_FORWARD,                  // 暂停态逐帧前进
     CMD_STEP_BACKWARD,                 // 暂停态逐帧后退（依赖 48 帧历史）
-    CMD_SET_RATE,                      // arg1=速率×100（100=1.0x，可选功能）
+    CMD_STEP_STOP,                      // 结束逐帧状态
+    CMD_SET_SPEED,                      // arg1=速率×10（10=1.0x，可选功能）
     CMD_STOP,                          // 停止并释放解码/渲染线程，回到 IDLE
     CMD_QUIT,                          // 退出消息循环（析构前）
+
 };
 
 //Core->UI
@@ -116,5 +119,7 @@ private:
     std::mutex m_mutex;
     std::condition_variable m_cond;
 };
+
+PlayerMessage getErrorMsg(std::string error);
 
 #endif // MESSAGEQUEUE_H

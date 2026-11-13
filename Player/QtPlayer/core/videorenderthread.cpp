@@ -26,10 +26,9 @@ VideoRenderThread::~VideoRenderThread()
     stop();
 }
 
-
-void VideoRenderThread::setWidget(VideoWidget* widget)
+void VideoRenderThread::setPaintFrameCallBack(PaintFrame painter)
 {
-    m_widget = widget;
+    m_painter = std::move(painter);
 }
 
 
@@ -127,7 +126,7 @@ void VideoRenderThread::clearStepRequests()
 
 void VideoRenderThread::renderFrame(Frame* frame)
 {
-    if (!frame || !frame->m_frame || !m_widget)
+    if (!frame || !frame->m_frame || !m_painter)
     {
         return;
     }
@@ -140,39 +139,8 @@ void VideoRenderThread::renderFrame(Frame* frame)
         return;
     }
 
-    /*
-     * 上屏"最新帧优先"：
-     * GUI 线程还没消化上一帧时，这一帧直接丢掉。
-     * 否则每帧都会往事件队列里塞一个带着整帧 buffer 的 lambda，
-     * GUI 线程一忙（拖动窗口/模态对话框/重绘）就会越堆越多：
-     * 内存膨胀，而且松手之后还要把积压的陈旧帧挨个补播一遍。
-     */
-    if (!m_widget->beginPaint())
-    {
-        av_frame_free(&renderFrame);
-        return;
-    }
-
-    //widget 可能先于这条投递被销毁，用 QPointer 保护，别解引用野指针
-    QPointer<VideoWidget> widgetGuard(m_widget);
-
-    QMetaObject::invokeMethod(
-        m_widget,
-        [widgetGuard, renderFrame]() mutable
-        {
-            if (widgetGuard)
-            {
-                //先清"在飞"标志：setPaint 内部有多个提前返回分支
-                widgetGuard->endPaint();
-                widgetGuard->setPaint(renderFrame);
-            }
-            else
-            {
-                av_frame_free(&renderFrame);
-            }
-        },
-        Qt::QueuedConnection
-        );
+    //回调播放
+    m_painter(renderFrame);
 }
 
 

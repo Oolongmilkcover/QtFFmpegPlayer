@@ -32,13 +32,14 @@ AudioThread::~AudioThread()
     m_frameQue = nullptr;
 }
 
-bool AudioThread::open(AVStream *audioStream)
+bool AudioThread::open(AVStream *audioStream, PaintFrame cb)
 {
     if(!audioStream){
         return false;
     }
     close();
     m_audioStream = audioStream;
+    m_audioPlayer = std::move(cb);
     AVCodecParameters *para = m_audioStream->codecpar;
 
     std::lock_guard<std::mutex> lock(m_auMutex);

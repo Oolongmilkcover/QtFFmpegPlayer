@@ -3,7 +3,7 @@
 #include <thread>
 #include <atomic>
 #include <functional>
-class PlayerMessage;
+struct PlayerMessage;
 class MessageQueue;
 
 class MessageLoopThread

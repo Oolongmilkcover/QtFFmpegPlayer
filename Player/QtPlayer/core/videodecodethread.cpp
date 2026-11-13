@@ -78,10 +78,10 @@ void VideoDecodeThread::wait()
     }
 }
 
-bool VideoDecodeThread::open(VideoWidget *widget, int width, int height,AVStream* videoStream)
+bool VideoDecodeThread::open(AVStream* videoStream , PaintFrame cb)
 {
     qDebug()<< "VideoDecodeThread::open!";
-    if (!videoStream||!widget)return false;
+    if (!videoStream)return false;
     close();  //停止上一轮残留线程
     //上一轮的"尾帧/播完"标志作废（否则新文件会被当成已播完）
     resetPlayState();
@@ -93,10 +93,9 @@ bool VideoDecodeThread::open(VideoWidget *widget, int width, int height,AVStream
     refillBoundaryPts.store(-1);
     m_stepDecoding.store(false);
     m_videoStream = videoStream;
+    m_painter = std::move(cb);
     AVCodecParameters *para = videoStream->codecpar;
 
-    m_widget = widget;
-    m_widget->Init(width,height);
     m_serial = 0;
 
     m_videoRenderThread->serial = 0;
@@ -105,7 +104,7 @@ bool VideoDecodeThread::open(VideoWidget *widget, int width, int height,AVStream
     bool ret = codecInit(para);
     if (ret) {
         setFps(videoStream);
-        m_videoRenderThread->setWidget(m_widget);
+        m_videoRenderThread->setPaintFrameCallBack(m_painter);
         m_videoRenderThread->restart();
         m_videoRenderThread->resetFrameClock();
     }
@@ -114,7 +113,7 @@ bool VideoDecodeThread::open(VideoWidget *widget, int width, int height,AVStream
     return ret;
 }
 
-bool VideoDecodeThread::repaintPts(AVPacket *pkt, int64_t seekpts,int serial)
+bool VideoDecodeThread::repaintPts(AVPacket *pkt, int64_t seekpts,int serial,int64_t& realPts)
 {
     if (!pkt) return false;
     m_serial = serial;
@@ -147,9 +146,11 @@ bool VideoDecodeThread::repaintPts(AVPacket *pkt, int64_t seekpts,int serial)
             paint(frame);
             //记真正显示出来的那一帧的时间，而不是请求的时间
             m_videoRenderThread->pts.store(frameMs);
+            realPts = frameMs;
             found = true;
         } else {
             av_frame_free(&frame);
+            realPts = -1;
         }
     }
 
@@ -169,17 +170,11 @@ void VideoDecodeThread::setRenderPause(bool isPause)
 
 void VideoDecodeThread::paint(AVFrame* frame)
 {
-    if(!m_widget){
-        av_frame_free(&frame);
+
+    if(!frame){
         return;
     }
-    QMetaObject::invokeMethod(
-        m_widget,
-        [this, frame]() {
-            m_widget->setPaint(frame);
-        },
-        Qt::QueuedConnection
-        );
+    m_painter(frame);
 }
 
 void VideoDecodeThread::run()

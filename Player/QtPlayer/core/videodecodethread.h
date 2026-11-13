@@ -27,10 +27,10 @@ public:
     explicit VideoDecodeThread(int frameSize = 100 , bool keep_last = true);
     ~VideoDecodeThread();
     //
-    bool open(VideoWidget* widget,int width,int height,AVStream* videoStream);
+    bool open(AVStream* videoStream , PaintFrame cb);
 
     //给seek做的函数，如果没到达指定pos就释放，到了就显示并释放
-    bool repaintPts(AVPacket *pkt, int64_t seekpts,int serial);
+    bool repaintPts(AVPacket *pkt, int64_t seekpts,int serial,int64_t& realPts);
 
     //暂停（解码线程 + 渲染线程）
     void setPause(bool isPause);
@@ -122,7 +122,9 @@ private:
     // 线程是否在跑（start() 幂等用，避免重复 start 时自己 join 自己）
     std::atomic<bool> m_running{false};
     std::atomic<bool> m_isPause = false;
-    VideoWidget* m_widget = nullptr;
+
+    PaintFrame m_painter = nullptr;
+
     //视频渲染线程  framequeue消费者
     VideoRenderThread *m_videoRenderThread = nullptr;
     AVStream* m_videoStream = nullptr;

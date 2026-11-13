@@ -233,7 +233,7 @@ bool DemuxThread::openFile(const char* url,VideoWidget* widget)
         m_width = vpara->width;
         m_height = vpara->height;
         if (m_hasVideo){
-            if(!m_videoDecodeThread->open(widget,vpara->width,vpara->height,m_fmt_ctx->streams[m_videoStream])){
+            if(!m_videoDecodeThread->open(m_fmt_ctx->streams[m_videoStream],nullptr)){
                 tmpRet = false;
                 qDebug()<<"m_videoDecodeThread->open failed";
             }
@@ -241,7 +241,7 @@ bool DemuxThread::openFile(const char* url,VideoWidget* widget)
     }
     if (m_hasAudio){
         //打开音频解码器和处理线程
-        if(!m_audioThread->open(m_fmt_ctx->streams[m_audioStream])){
+        if(!m_audioThread->open(m_fmt_ctx->streams[m_audioStream],nullptr)){
             qDebug() << "音频打开失败，降级为静音播放";
             /*
              * open() 是按「解码器 → 重采样 → 声卡 → atempo 滤镜」的顺序初始化的，
@@ -448,6 +448,7 @@ bool DemuxThread::requestSeekMs(long long ms)
         // player.cpp 的 queueSeekBy 开头会直接 return，快进/快退彻底失效。
         m_seekPauseing.store(false);
         setPause(wasPause);
+        m_msgQue->push(std::move(m_msgQue->getMsg(PlayerEvent::EVT_SEEK_DONE,ms)));
         return true;
     }
 
@@ -462,7 +463,8 @@ bool DemuxThread::requestSeekMs(long long ms)
     if (!m_playerctx->getIsSeeking()) {
         m_pauseAfterSeek.store(m_playerctx->getIsPause());
     }
-    emit disableBtn();
+    //emit disableBtn();
+    m_msgQue->push(std::move(m_msgQue->getMsg(PlayerEvent::EVT_DISABLEBTN)));
     //m_isSeeking = true;
     m_msgQue->push(std::move(m_msgQue->getMsg(ContextChange::CTX_IS_SEEKING,1)));
     return true;
@@ -658,7 +660,8 @@ void DemuxThread::run()
                         if(m_isStreamMedia.load()){
                             setPause(true);
                         }else if(m_playerctx->getHasPlayList()){
-                            emit playNext();
+                            //emit playNext();
+                            m_msgQue->push(std::move(m_msgQue->getMsg(PlayerEvent::EVT_PLAYNEXT)));
                         }else{
                             seek(0.0);
                         }
@@ -673,7 +676,8 @@ void DemuxThread::run()
                         if(m_isStreamMedia.load()){
                             setPause(true);
                         }else if(m_playerctx->getHasPlayList()){
-                            emit playNext();
+                            //emit playNext();
+                            m_msgQue->push(std::move(m_msgQue->getMsg(PlayerEvent::EVT_PLAYNEXT)));
                         }else{
                             seek(0.0);
                         }
@@ -769,7 +773,8 @@ void DemuxThread::doSeek()
             //m_isSeeking.store(false);    // seek 结束，清“进行中”标志
             m_msgQue->push(std::move(m_msgQue->getMsg(ContextChange::CTX_IS_SEEKING,0)));
             m_seekPauseing.store(false); // 早退也必须清，否则快进/快退会永久失效
-            emit ableBtn();
+            //emit ableBtn();
+            m_msgQue->push(std::move(m_msgQue->getMsg(PlayerEvent::EVT_ABLEBTN)));
             return;
         }
         avformat_flush(m_fmt_ctx);
@@ -789,6 +794,8 @@ void DemuxThread::doSeek()
         if (m_hasAudio) m_audioThread->flushBuf();
     }
     int serial = m_serial.load();
+    //具体seek到的ms
+    int64_t realMs = -1;
     while (m_hasVideo && !m_playerctx->getIsExit())
     {
         AVPacket *pkt = readPkt(); // 内部自己加锁、快速释放
@@ -796,20 +803,20 @@ void DemuxThread::doSeek()
 
         if (pkt->stream_index == m_videoStream) {
             // repaintPts 内部只在解码瞬间加锁
-            bool found = m_videoDecodeThread->repaintPts(pkt, seekMs,serial);
+            bool found = m_videoDecodeThread->repaintPts(pkt, seekMs,serial,realMs);
             if (found) break;
         } else {
             av_packet_free(&pkt);
         }
     }
-    // 3. 更新 serial
+    // 更新 serial
     if (m_hasAudio){
         m_audioThread->setSerial(serial);
         //复位音频重采样器与 atempo 滤镜
         m_audioThread->requestFilterReset();
     }
 
-    // 6. 恢复暂停状态
+    // 恢复暂停状态
     //m_isPause.store(wasPause);
     m_msgQue->push(std::move(m_msgQue->getMsg(ContextChange::CTX_IS_PAUSE,wasPause)));
     if (m_videoDecodeThread) m_videoDecodeThread->setPause(wasPause);
@@ -818,7 +825,17 @@ void DemuxThread::doSeek()
     //m_isSeeking.store(false);
     m_msgQue->push(std::move(m_msgQue->getMsg(ContextChange::CTX_IS_SEEKING,0)));
 
-    emit ableBtn();
+    //emit ableBtn();
+    m_msgQue->push(std::move(m_msgQue->getMsg(PlayerEvent::EVT_ABLEBTN)));
+
+    //音频没有关键帧的概念 直接发送消息给ui改变进度条即可，视频得进一步找到具体ms
+    int64_t realSeekMs = 0;
+    if(realMs < 0){
+        realSeekMs = seekMs;
+    }else{
+        realSeekMs = realMs;
+    }
+    m_msgQue->push(std::move(m_msgQue->getMsg(PlayerEvent::EVT_SEEK_DONE,realSeekMs)));
 }
 
 void DemuxThread::doBackwardRefill()

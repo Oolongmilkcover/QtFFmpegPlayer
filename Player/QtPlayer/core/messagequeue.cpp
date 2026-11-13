@@ -136,3 +136,17 @@ void MessageQueue::destroyAllNodes()
     m_nb = 0;
     m_total_allocated = 0;
 }
+
+
+PlayerMessage getErrorMsg(std::string error)
+{
+    PlayerMessage msg ;
+    msg.what = EVT_ERROR;
+    msg.arg1 = 0;
+    msg.arg2 = 0;
+    msg.obj = new std::string(error);
+    msg.free_l = [](void* p ){
+        delete static_cast<std::string*>(p);
+    };
+    return msg;
+}

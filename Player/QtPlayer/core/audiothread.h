@@ -18,7 +18,7 @@ public:
     ~AudioThread();
 
     // 初始化音频
-    bool open(AVStream *audioStream);
+    bool open(AVStream *audioStream , PaintFrame cb);
 
     // 关闭
     void close();
@@ -74,6 +74,8 @@ private:
 
     // 音频播放器
     AudioPlayer *m_auPlayer = nullptr;
+    PaintFrame m_audioPlayer = nullptr;
+
 
     // 重采样上下文
     SwrContext *m_swr_ctx = nullptr;

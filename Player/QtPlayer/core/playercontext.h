@@ -1,6 +1,7 @@
 #ifndef PLAYERCONTEXT_H
 #define PLAYERCONTEXT_H
 #include<atomic>
+#include <string>
 class  PlayerContext
 {
 private:
@@ -17,6 +18,7 @@ private:
     void setIsFrameStep(bool val)       { m_isFrameStep.store(val);}
     void setIsStreamMedia(bool val)     { m_isStreamMedia.store(val);}
     void setSpeed(double val)           { m_speed.store(val);}
+    void setSetPlayingName(std::string& name){m_playingName = name;};
 
 public:
     //供demudex读
@@ -30,7 +32,7 @@ public:
     bool getIsFrameStep()   const   {return m_isFrameStep.load();}
     bool getIsStreamMedia() const   {return m_isStreamMedia.load();}
     double getSpeed()       const   {return m_speed.load();}
-
+    std::string getPlayingName() const{return m_playingName;};
 
 private:
     //是否退出
@@ -64,6 +66,9 @@ private:
 
     //倍速
     std::atomic<double> m_speed{1.0};
+
+    //正在播放的名字
+    std::string m_playingName;
 
 public:
     PlayerContext();

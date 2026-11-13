@@ -23,7 +23,12 @@ class AVCodecParameters;
  *   - 视频解码线程由 VideoDecodeThread 自己持有；
  *   - 音频解码/播放线程由 AudioThread 自己持有（一直是 std::thread）。
  * 这样基类只依赖 FFmpeg + 标准库，便于后续 core 化。
+ *
  */
+
+//音视频输出回调
+using PaintFrame = std::function<void(AVFrame* frame)>;
+
 class DecodeThread
 {
 public:

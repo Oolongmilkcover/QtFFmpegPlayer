@@ -5,6 +5,8 @@
 #include <QListWidgetItem>
 #include <QWidget>
 #include "core/perfclock.h"
+class PlayerCore;
+struct PlayerMessage;
 QT_BEGIN_NAMESPACE
 namespace Ui {
 class Player;
@@ -105,13 +107,30 @@ private slots:
     void adjustVolume(double delta);
 
     void changeSpeed(double delta);
+
+    //读消息时调用的私有函数
+    void on_EVT_PREPARED(PlayerMessage& msg);
+
+    void on_EVT_POSITION(PlayerMessage& msg);
+
+    void on_DISABLEBTN();
+
+    void on_ABLEBTN();
+
+    void on_EVT_ERROR(PlayerMessage& msg);
 private:
     Ui::Player *ui;
+
+    PlayerContext* m_playerCtx;
+
+    PlayerCore*  m_playerCore;
+
+    void setEventCallback();
 
     bool m_isPause = false;
 
     bool isSliderPress = false;
-    DemuxThread dt;
+    //DemuxThread dt;
 
     bool m_isInit = false;
 
@@ -161,7 +180,10 @@ private:
 
     double m_speed = 1.0;
 
+    long long m_durationMs = 0;
 
+    //用于显示进度条和供快进快退使用，大致有50~200ms的误差，可以接受
+    long long m_pts = 0;
 
 };
 #endif // PLAYER_H

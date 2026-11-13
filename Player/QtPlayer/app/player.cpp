@@ -1,5 +1,7 @@
 #include "app/player.h"
-#include "ui_player.h"
+#include "core/messagequeue.h"
+#include "core/playercore.h"
+#include "app/ui_player.h"
 #include <QFileDialog>
 #include <QMessageBox>
 #include <QMouseEvent>
@@ -24,6 +26,14 @@ Player::Player(QWidget *parent)
     , ui(new Ui::Player)
 {
     ui->setupUi(this);
+
+    //PlayerCore Init
+    m_playerCtx = new PlayerContext();
+    m_playerCore = new PlayerCore();
+    if(!m_playerCore || !m_playerCtx) exit(0);
+    m_playerCore->setPlayerContext(m_playerCtx);
+    setEventCallback();
+
     //设置窗口图标&默认窗口标题
     this->setWindowIcon(QIcon(":/workBtnPNG/OPlayer.png"));
     this->setWindowTitle("OPlayer");
@@ -52,20 +62,6 @@ Player::Player(QWidget *parent)
     ui->dockWidget->setFloating(false);
     ui->dockWidget->setAllowedAreas(Qt::NoDockWidgetArea);
     ui->dockWidget->setWindowTitle("播放列表");
-
-    connect(&dt,&DemuxThread::disableBtn,this,[=](){
-        bool isPause = dt.getIsPause();
-        setPausePicture(isPause);
-        ui->ctrlbar->setDisabled(true);
-        ui->topMenu->setDisabled(true);
-    });
-    connect(&dt,&DemuxThread::ableBtn,this,[=](){
-        bool isPause = dt.getIsPause();
-        setPausePicture(isPause);
-        ui->ctrlbar->setDisabled(false);
-        ui->topMenu->setDisabled(false);
-    });
-
 
     //---------------------------------------------------------------------------
     //底部控制按键组信号操作
@@ -136,9 +132,9 @@ Player::Player(QWidget *parent)
     connect(ui->playList, &PlayList::playThis,
             this, &Player::on_playList_doubleClicked);
 
-    //来自dt的下一集
-    connect(&dt, &DemuxThread::playNext, this, &Player::playNext);
-    connect(ui->playList,&PlayList::noMoreToPlay,this,[this]{dt.setHasPlayList(false);});
+
+
+    //tempconnect(ui->playList,&PlayList::noMoreToPlay,this,[this]{dt.setHasPlayList(false);});
 
     //支持拖文件进来
     setAcceptDrops(true);
@@ -146,7 +142,7 @@ Player::Player(QWidget *parent)
 
 Player::~Player()
 {
-    if (!m_isClosing) dt.close();
+    if (!m_isClosing) m_playerCore->postMessage(PlayerCmd::CMD_STOP);//dt.close();
     if (m_timerId) killTimer(m_timerId);
     if (m_seekDebounceTimerId) killTimer(m_seekDebounceTimerId);
     delete ui;
@@ -239,10 +235,7 @@ void Player::on_openLink()
 
 void Player::setVolume(double pos)
 {
-    // if(m_isInit){
-    //    dt.setVolume(pos);
-    // }
-    dt.setVolume(pos);
+    m_playerCore->postMessage(PlayerCmd::CMD_SET_VOLUME,static_cast<int>(pos*100));
     m_nowVolume = pos;
 }
 
@@ -282,7 +275,8 @@ void Player::stopToPlay()
     if(!m_isInit) return;
     exitStepFrame();
     setPausePicture(true);
-    dt.close();
+    //dt.close();
+    m_playerCore->postMessage(PlayerCmd::CMD_STOP);
     ui->video->clearScreen();
     //停机后不再有"流媒体"状态，这些机制恢复默认可用（下次 playFile 会按新片源重新判定）
     ui->ctrlbar->setStreamMode(false);
@@ -341,29 +335,32 @@ void Player::playFile(const QString &path)
 
     //换文件前先退出逐帧
     exitStepFrame();
-    //this->setWindowTitle(path);
-    if (!dt.openFile(path.toUtf8().constData(), ui->video)) {
-        QMessageBox::information(0, "error", "open file failed!");
-        return;
-    }
+    //if (!dt.openFile(path.toUtf8().constData(), ui->video)) {
+    //    QMessageBox::information(0, "error", "open file failed!");
+    //    return;
+    //}
+    m_playerCore->postMessage(PlayerCmd::CMD_OPEN,0,0,new std::string(path.toUtf8().constData()),[](void* p){
+        delete static_cast<std::string*>(p);
+    });
+
+
 
     //ui->video->setPerfStartNs(startNs);
 
     emit setPlayingText(path);
-    dt.start();
     this->showNormal();
     m_isInit = true;
     /*
      * 流媒体：把快进/快退/逐帧/倍速/上下集这些入口整体关掉（按钮 + 快捷键 + 进度条），
      * 换回本地视频时这里会重新判定并自动恢复。
      */
-    //tempui->ctrlbar->setStreamMode(dt.isStreamMedia());
-    //tempif (dt.isStreamMedia() && m_speed != 1.0) {
-    //temp    //倍速已经被 DemuxThread::openFile 强制拉回 1.0，标签也得跟着回到 1.0，
-    //temp    //否则界面写着 2.0x、实际按 1.0x 播，而倍速按钮又是灰的，用户无从判断。
-    //temp    m_speed = 1.0;
-    //temp    ui->ctrlbar->setSpeedLabel(m_speed);
-    //temp}
+    ui->ctrlbar->setStreamMode(m_playerCtx->getIsStreamMedia());
+    if (m_playerCtx->getIsStreamMedia() && m_speed != 1.0) {
+        //倍速已经被 DemuxThread::openFile 强制拉回 1.0，标签也得跟着回到 1.0，
+        //否则界面写着 2.0x、实际按 1.0x 播，而倍速按钮又是灰的，用户无从判断。
+        m_speed = 1.0;
+        ui->ctrlbar->setSpeedLabel(m_speed);
+    }
     // 重置滑块状态，避免之前操作的影响
     isSliderPress = false;                 // 清除按下标志
     // 换文件时丢弃上一次遗留的待生效 seek 与去抖定时器
@@ -372,27 +369,23 @@ void Player::playFile(const QString &path)
         m_seekDebounceTimerId = 0;
     }
     m_pendingSeekMs = -1;
-    ui->ctrlbar->setSliderValue(0);            // 滑块归零
-    ui->ctrlbar->setSliderMaximum(dt.totalMs);
     ui->ctrlbar->setDisabled(false);
     setVolume(m_nowVolume);
     if (m_timerId)
         killTimer(m_timerId);
     //用于进度条的计时器？
     m_timerId = startTimer(16);
-    m_videoSrcW = dt.m_width;
-    m_videoSrcH = dt.m_height;
     update();
     resizeEvent(nullptr);
     //setPausePicture(dt.getIsPause());
-    if(!dt.getIsPause()){
+    if(!m_playerCtx->getIsPause()){
         play();
     }else{
         pause();
     }
-    //tempif (!dt.hasVideo()) {
-    //temp    ui->video->clearScreen();   // 纯音频：黑屏
-    //temp}
+    if (!m_playerCtx->getHasVideo()) {
+        ui->video->clearScreen();   // 纯音频：黑屏
+    }
 }
 
 void Player::playNext()
@@ -447,11 +440,11 @@ void Player::queueSeekBy(long long deltaMs)
     //逐帧中快进/快退：先退出逐帧（位置会对齐）
     exitStepFrame();
 
-    const long long totalMs = dt.totalMs;
+    const long long totalMs = m_durationMs;
     if(totalMs <= 0) return;   //时长未知，没法和范围对齐
 
     //基准：有“已累积但还没生效”的目标就接着累积，否则取当前主时钟位置
-    const long long base = (m_pendingSeekMs >= 0) ? m_pendingSeekMs : dt.pts.load();
+    const long long base = (m_pendingSeekMs >= 0) ? m_pendingSeekMs : m_pts;
     long long target = base + deltaMs;
     if(target < 0) target = 0;
     if(target > totalMs) target = totalMs;
@@ -462,7 +455,10 @@ void Player::queueSeekBy(long long deltaMs)
     if(m_seekDebounceTimerId == 0){
         //前沿：这一串按键的第一次立即生效
         m_pendingSeekMs = -1;
-        dt.seekToMs(target);
+        //dt.seekToMs(target);
+        int tmp_arg1 = static_cast<int>(target>>32); //高32位
+        int tmp_arg2 = static_cast<int>(target & 0xFFFFFFFF);//低32位
+        m_playerCore->postMessage(PlayerCmd::CMD_SEEK,tmp_arg1,tmp_arg2);
     }else{
         //后续按键：只累积，等静默后再 seek 末次
         m_pendingSeekMs = target;
@@ -479,18 +475,20 @@ void Player::stepFrame(int mode)
 {
     if(!m_isInit) return;
     //流媒体没有"上一帧/下一帧"这个概念（底层也回退不了），不进入逐帧模式
-    //tempif(dt.isStreamMedia()) return;
+    if(m_playerCtx->getIsStreamMedia()) return;
     //上一帧 / 下一帧：进入逐帧模式（暂停渲染，解码继续）
-    bool success = false;
+    //bool success = false;
     if(mode == 1){
-        success = dt.stepNextFrame();
+        //success = dt.stepNextFrame();
+        m_playerCore->postMessage(PlayerCmd::CMD_STEP_FORWARD);
     }else{
-        success = dt.stepPrevFrame();
+        //success = dt.stepPrevFrame();
+        m_playerCore->postMessage(PlayerCmd::CMD_STEP_BACKWARD);
     }
-    if(!success){
-        //不支持逐帧（没有视频流 / 纯音频文件）时保持原状
-        return;
-    }
+    // if(!success){
+    //     //不支持逐帧（没有视频流 / 纯音频文件）时保持原状
+    //     return;
+    // }
     if(!m_stepFrame){
         m_stepFrame = true;
         m_isPause = true;
@@ -508,7 +506,8 @@ void Player::exitStepFrame()
     ui->ctrlbar->stepFrameTime(false);
     ui->topMenu->stepFrameTime(false);
     //让dt退出逐帧：恢复音频、把播放位置对齐到当前显示的帧
-    dt.endFrameStep();
+    //dt.endFrameStep();
+    m_playerCore->postMessage(PlayerCmd::CMD_STEP_STOP);
 }
 
 void Player::adjustVolume(double delta)
@@ -531,8 +530,106 @@ void Player::changeSpeed(double delta)
     if (newSpeed < 0.5) newSpeed = 0.5;
     if (newSpeed > 2.0)  newSpeed = 2.0;
     m_speed = newSpeed;
-    dt.setSpeed(m_speed);
+    //dt.setSpeed(m_speed);
+    m_playerCore->postMessage(PlayerCmd::CMD_SET_SPEED,m_speed*10);
     ui->ctrlbar->setSpeedLabel(m_speed);
+}
+
+void Player::on_EVT_PREPARED(PlayerMessage& msg)
+{
+    long long durationMs = msg.arg1;
+    int width = (msg.arg2>>16) & 0xFFFF;
+    int height = msg.arg2 & 0xFFFF;
+    QMetaObject::invokeMethod(this,[this,width,height,durationMs](){
+        this->m_videoSrcW = width;
+        this->m_videoSrcH = height;
+        this->m_durationMs = durationMs;
+        ui->ctrlbar->setSliderMaximum(durationMs);
+        ui->ctrlbar->setSliderValue(0);
+    },Qt::QueuedConnection);
+}
+
+void Player::on_EVT_POSITION(PlayerMessage &msg)
+{
+    int ms = msg.arg1;
+    QMetaObject::invokeMethod(this,[this,ms](){
+        ui->ctrlbar->setSliderValue(ms);
+    },Qt::QueuedConnection);
+}
+
+void Player::on_DISABLEBTN()
+{
+    bool isPause = m_playerCtx->getIsPause();
+    setPausePicture(isPause);
+    ui->ctrlbar->setDisabled(true);
+    ui->topMenu->setDisabled(true);
+}
+
+void Player::on_ABLEBTN()
+{
+    bool isPause = m_playerCtx->getIsPause();
+    setPausePicture(isPause);
+    ui->ctrlbar->setDisabled(false);
+    ui->topMenu->setDisabled(false);
+}
+
+void Player::on_EVT_ERROR(PlayerMessage &msg)
+{
+    QString wrong = "未知错误";
+    if (msg.obj != nullptr) {
+        std::string* errStr = static_cast<std::string*>(msg.obj);
+        wrong = QString::fromStdString(*errStr);
+    }
+    QMessageBox::warning(this, "错误", wrong);
+}
+
+void Player::setEventCallback()
+{
+    m_playerCore->setEventCallBack([this](PlayerMessage& msg){
+        int what = msg.what;
+        switch(what){
+        case EVT_PREPARED:{
+            // arg1=时长ms, arg2=(宽<<16)|高
+            on_EVT_PREPARED(msg);
+            break;
+        }
+        case EVT_POSITION:
+            // arg1=当前播放位置ms（100~200ms 一次，别每帧发）
+            on_EVT_POSITION(msg);
+            break;
+        case EVT_STATE_CHANGED:
+            // arg1=新状态（IDLE/INITIALIZED/PREPARING/PREPARED/STARTED/PAUSED/COMPLETED/STOPPED/ERROR）
+            break;
+        case EVT_DISABLEBTN:
+            //关闭按钮
+            on_DISABLEBTN();
+            break;
+        case EVT_ABLEBTN:
+            //开启按钮
+            on_ABLEBTN();
+            break;
+        case EVT_PLAYNEXT:
+            //当前视频播放完毕请求播放下一个
+            playNext();
+            break;
+        case EVT_SEEK_DONE:
+            // arg1=实际落点ms（seek 可能不精确，要对齐关键帧）
+
+            break;
+        case EVT_BUFFERING:
+            // arg1=1 开始缓冲 / 0 结束（网络流才有意义）
+
+            break;
+        case EVT_COMPLETED:
+            // 播到文件尾
+
+            break;
+        case EVT_ERROR:
+            // arg1=错误码, obj=std::string*(错误文本)
+            on_EVT_ERROR(msg);
+            break;
+        }
+    });
 }
 
 
@@ -558,7 +655,10 @@ void Player::sliderSeek(double pos)
     // ui->video->setPerfStartNs(startNs);
     // ui->video->m_needNsDiff.store(true);
     // //-----------
-    dt.seek(pos);
+    long long ms = m_durationMs*pos;
+    int tmp_arg1 = static_cast<int>(ms>>32); //高32位
+    int tmp_arg2 = static_cast<int>(ms & 0xFFFFFFFF);//低32位
+    m_playerCore->postMessage(PlayerCmd::CMD_SEEK,tmp_arg1,tmp_arg2);
 }
 
 void Player::timerEvent(QTimerEvent *e)
@@ -573,19 +673,26 @@ void Player::timerEvent(QTimerEvent *e)
         //用户此刻正在拖动进度条：让拖动接管，丢弃累积目标，
         //否则会在拖动过程中先跳一次（随后松手又会按拖动位置再跳一次）
         if (ui->ctrlbar->getSliderPress()) return;
-        if (target >= 0) dt.seekToMs(target);
+        if (target >= 0){
+            int tmp_arg1 = static_cast<int>(target>>32); //高32位
+            int tmp_arg2 = static_cast<int>(target & 0xFFFFFFFF);//低32位
+            m_playerCore->postMessage(PlayerCmd::CMD_SEEK,tmp_arg1,tmp_arg2);
+        };
         return;
     }
 
     if (isSliderPress)return;
     if (ui->ctrlbar->getSliderPress()) return ;
-    long long total = dt.totalMs;
-    if (total > 0)
-    {
-        //有待生效目标时，进度条显示目标（跟着按键走），而不是当前播放位置
-        const long long showMs = (m_pendingSeekMs >= 0) ? m_pendingSeekMs : dt.pts.load();
-        ui->ctrlbar->setSliderValue((int)showMs);
-    }
+
+    //！new 这个部分交给core 每隔100ms~200ms发一次刷新一次
+
+    // long long total = dt.totalMs;
+    // if (total > 0)
+    // {
+    //     //有待生效目标时，进度条显示目标（跟着按键走），而不是当前播放位置
+    //     const long long showMs = (m_pendingSeekMs >= 0) ? m_pendingSeekMs : dt.pts.load();
+    //     ui->ctrlbar->setSliderValue((int)showMs);
+    // }
 }
 
 void Player::closeEvent(QCloseEvent *e)
@@ -605,7 +712,8 @@ void Player::closeEvent(QCloseEvent *e)
     ui->ctrlbar->setDisabled(true);
     ui->topMenu->setDisabled(true);
     // 先停播放、停线程（GUI 线程执行，安全）
-    dt.close();
+    //dt.close();
+    m_playerCore->postMessage(PlayerCmd::CMD_STOP);
     // 接受关闭
     e->accept();
 }
@@ -814,7 +922,8 @@ void Player::updateResize(const QPoint &globalPos)
 void Player::addToPlayList(const QString &path)
 {
     ui->playList->addFile(path);
-    dt.setHasPlayList(true);
+    //dt.setHasPlayList(true);
+    m_playerCore->postMessage(ContextChange::CTX_HAS_PLAYLIST,1);
 }
 
 void Player::play()
@@ -827,7 +936,8 @@ void Player::play()
     ui->topMenu->stepFrameTime(false);
     m_stepFrame = false;
     m_isPause = false;
-    dt.setPause(false);
+    //dt.setPause(false);
+    m_playerCore->postMessage(PlayerCmd::CMD_PAUSE,0);
 }
 
 void Player::pause()
@@ -837,5 +947,6 @@ void Player::pause()
     exitStepFrame();
     ui->ctrlbar->setPausePictrue(true);
     m_isPause = true;
-    dt.setPause(true);
+    //dt.setPause(true);
+    m_playerCore->postMessage(PlayerCmd::CMD_PAUSE,1);
 }

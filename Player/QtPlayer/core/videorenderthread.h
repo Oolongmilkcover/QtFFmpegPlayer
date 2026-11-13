@@ -23,8 +23,11 @@ public:
 
     explicit VideoRenderThread(FrameQueue* frameQueue);
     ~VideoRenderThread();
-    //设置VideoWidget
-    void setWidget(VideoWidget* widget);
+
+    using PaintFrame = std::function<void(AVFrame* frame)>;
+    void setPaintFrameCallBack(PaintFrame painter);
+
+
     //设置视频帧率
     void setFps(double fps);
     //取视频帧率
@@ -60,6 +63,9 @@ public:
     void requestStep(int delta);
     void clearStepRequests();
 
+
+
+
 protected:
 
     void run();
@@ -72,7 +78,9 @@ private:
 
 private:
 
-    VideoWidget* m_widget = nullptr;
+    //VideoWidget* m_widget = nullptr;
+
+    PaintFrame m_painter = nullptr;
 
     FrameQueue* m_frameQueue = nullptr;
 
