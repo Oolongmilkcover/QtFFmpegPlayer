@@ -1,7 +1,10 @@
 #ifndef AUDIOPLAYER_H
 #define AUDIOPLAYER_H
 #include <QObject>
-class AudioPlayer : public QObject
+#include <mutex>
+#include "core/iaudiooutput.h"
+class QAudioSink;
+class AudioPlayer : public QObject , IAudioOutput
 {
     Q_OBJECT
 public:
@@ -10,20 +13,27 @@ public:
     int channels = 2;
 
     //打开音频播放
-    virtual bool open() = 0;
-    virtual void close() = 0;
-    virtual void clear() = 0;
+    bool open(int sampleRate, int channels) override ;
+    void close()override;
+    void clear()override;
     //返回缓冲中还没有播放的时间（毫秒）
-    virtual long long getNoPlayMs() = 0;
+    long long getNoPlayMs()override;
     //播放音频
-    virtual int write(const unsigned char *data, int datasize) = 0;
-    virtual int getFree() = 0;
-    virtual void setPause(bool isPause) = 0;
-    virtual void setVolume(qreal vol) = 0;
-    virtual double  getVolume() = 0;
-    static AudioPlayer *getPlayer();
+    int write(const unsigned char *data, int datasize) override;
+    int getFree()override;
+    void setPause(bool isPause)override;
+    void setVolume(qreal vol);
+    double  getVolume();
     AudioPlayer();
-    virtual ~AudioPlayer();
+    ~AudioPlayer();
+
+private:
+    QAudioSink *m_sink = nullptr;  // Qt6 用 QAudioSink 替代 QAudioOutput
+    QIODevice *m_io = nullptr;
+    std::mutex m_mutex;
+    bool m_isPaused = false;
+    //double
+    qreal m_savedVolume = 0.5;
 };
 
 #endif // AUDIOPLAYER_H

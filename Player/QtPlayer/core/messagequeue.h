@@ -1,19 +1,22 @@
 #ifndef MESSAGEQUEUE_H
 #define MESSAGEQUEUE_H
+#include <condition_variable>
 #include<functional>
 #include <mutex>
+#include <string>   // getMsg()/getErrorMsg() 里用到 std::string；libstdc++ 的 <condition_variable> 只带前置声明，
+                    // 不写这行在 MinGW/GCC 上会报 "invalid use of incomplete type 'std::string'"（MSVC 头文件会顺带包含 <string>，所以只有它编得过）
 
 //UI->Core
 enum PlayerCmd {
-    CMD_OPEN        = 1,               // arg1=0, obj=std::string*(路径/URL)；成功后发 EVT_PREPARED
+    CMD_OPEN        = 1,               // arg1=0, obj=std::string*(路径/URL)+PaintFrame回调函数+AudioPlyer指针；成功后发 EVT_PREPARED
     CMD_PLAY,                          // 开始/恢复播放（内部按状态机判断 PREPARED→STARTED / PAUSED→STARTED）
     CMD_PAUSE,                         // STARTED→PAUSED
     CMD_SEEK,                          // 用arg1和arg2拆分int64为高位和低位 arg1=目标毫秒；完成后发 EVT_SEEK_DONE
     CMD_SET_VOLUME,                    // 设置音量 arg1 = pos*100
+    CMD_SET_SPEED,                      // arg1=速率×10（10=1.0x）
     CMD_STEP_FORWARD,                  // 暂停态逐帧前进
     CMD_STEP_BACKWARD,                 // 暂停态逐帧后退（依赖 48 帧历史）
     CMD_STEP_STOP,                      // 结束逐帧状态
-    CMD_SET_SPEED,                      // arg1=速率×10（10=1.0x，可选功能）
     CMD_STOP,                          // 停止并释放解码/渲染线程，回到 IDLE
     CMD_QUIT,                          // 退出消息循环（析构前）
 

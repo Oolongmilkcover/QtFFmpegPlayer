@@ -7,19 +7,25 @@
 获取：宽、高、帧率、总时长
 Seek 功能 
 */
+#include "core/iaudiooutput.h"
 #include "core/playercontext.h"
 #include "core/perfclock.h"
 #include "libavutil/rational.h"
 #include <QSet>
 #include <QThread>
-class AVFormatContext;
-class AVDictionary;
+// 同上：FFmpeg 类型一律用 struct 前置声明，避免与其它 TU 的修饰名不一致（LNK2019）
+struct AVFormatContext;
+struct AVDictionary;
 class VideoDecodeThread;
 class AudioThread;
 class VideoWidget;
-class AVPacket;
+struct AVPacket;
 class PlayerContext;
 class MessageQueue;
+struct AVFrame;
+//视频输出回调
+using PaintFrame = std::function<void(AVFrame* frame)>;
+
 class DemuxThread : public QThread
 {
     Q_OBJECT
@@ -34,7 +40,7 @@ public:
 
 
     //打开文件
-    bool openFile(const char* url,VideoWidget* widget);
+    bool openFile(const char* url,PaintFrame cb , IAudioOutput* out);
     
     //启动所有线程
     void start();

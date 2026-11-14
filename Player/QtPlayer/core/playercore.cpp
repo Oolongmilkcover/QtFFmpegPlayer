@@ -2,8 +2,10 @@
 #include "core/messageloopthread.h"
 #include "core/messagequeue.h"
 #include "core/playercontext.h"
+
+
 PlayerCore::PlayerCore() {
-    setMessageHandler();
+    setMessageHandler();    
 }
 
 
@@ -23,7 +25,7 @@ void PlayerCore::setMessageHandler()
                     // arg1=0, obj=std::string*(路径/URL)；成功后发 EVT_PREPARED
                     std::string name = *static_cast<std::string*>(msg.obj);
                     m_playerctx->setSetPlayingName(name);
-                    if(!dt.openFile(name.c_str(),nullptr)){
+                    if(!dt.openFile(name.c_str(),nullptr,nullptr)){
                         postMessage(getErrorMsg("dt.openFile failed"));
                     };//dt.openFile(name.c_str()) 还没改
                     dt.start();

@@ -11,11 +11,14 @@
 #include<mutex>
 #include "core/framequeue.h"
 #include "core/packetqueue.h"
-class AVCodec;
-class AVCodecContext;
-class AVPacket;
-class AVFrame;
-class AVCodecParameters;
+// FFmpeg 的类型都是 typedef struct 出来的，前置声明必须写 struct。
+// 写成 class 的话 MSVC 会把 std::function<void(AVFrame*)> 的模板参数修饰成 PEAVAVFrame（class），
+// 与另一个 TU 里按 struct 生成的 PEAUAVFrame 不是同一个符号 → LNK2019 无法解析的外部符号。
+struct AVCodec;
+struct AVCodecContext;
+struct AVPacket;
+struct AVFrame;
+struct AVCodecParameters;
 /*
  * 解码器助手：包队列 / 帧队列 / 解码器初始化与收发。
  *
@@ -26,7 +29,7 @@ class AVCodecParameters;
  *
  */
 
-//音视频输出回调
+//视频输出回调
 using PaintFrame = std::function<void(AVFrame* frame)>;
 
 class DecodeThread

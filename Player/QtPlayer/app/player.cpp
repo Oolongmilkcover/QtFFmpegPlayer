@@ -15,6 +15,8 @@
 #include <QGuiApplication>   // 只在 Wayland 才需要请系统接管窗口缩放
 #include <QWindow>           // startSystemResize / startSystemMove
 #include <QInputDialog>
+#include "platform/audioplayer.h"
+#include "platform/videowidget.h"
 
 //快进/快退的“尾部”去抖窗口：停止按键多久后，把累积的目标补上。
 //配合“前沿”（这一串按键的第一次立即生效）实现 B 站式手感：
@@ -30,6 +32,9 @@ Player::Player(QWidget *parent)
     //PlayerCore Init
     m_playerCtx = new PlayerContext();
     m_playerCore = new PlayerCore();
+    m_widget = new VideoWidget(this);
+    m_auPlayer = new AudioPlayer();
+
     if(!m_playerCore || !m_playerCtx) exit(0);
     m_playerCore->setPlayerContext(m_playerCtx);
     setEventCallback();

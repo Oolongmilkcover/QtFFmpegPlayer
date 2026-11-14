@@ -18,7 +18,6 @@ AudioThread::AudioThread(int frameQueSize , bool keep_last )
 {
     m_frameQue = new FrameQueue(frameQueSize,keep_last);
     m_pktQue = new PacketQueue();
-    m_auPlayer = AudioPlayer::getPlayer();
     m_isExit = true;
 }
 
@@ -32,14 +31,19 @@ AudioThread::~AudioThread()
     m_frameQue = nullptr;
 }
 
-bool AudioThread::open(AVStream *audioStream, PaintFrame cb)
+bool AudioThread::open(AVStream *audioStream, IAudioOutput* out)
 {
     if(!audioStream){
         return false;
     }
     close();
     m_audioStream = audioStream;
-    m_audioPlayer = std::move(cb);
+    if(out == nullptr){
+        m_out = new NullAudioPlayer();
+    }else{
+        m_out = out;
+    }
+
     AVCodecParameters *para = m_audioStream->codecpar;
 
     std::lock_guard<std::mutex> lock(m_auMutex);
@@ -47,8 +51,6 @@ bool AudioThread::open(AVStream *audioStream, PaintFrame cb)
         swr_free(&m_swr_ctx);
         m_swr_ctx = nullptr;
     }
-    m_auPlayer->sampleRate = m_outSampleRate;
-    m_auPlayer->channels = m_outChannels;
     pts = 0;
     m_audioPts = 0;
     m_serial.store(0);
@@ -63,7 +65,7 @@ bool AudioThread::open(AVStream *audioStream, PaintFrame cb)
         return false;
     }
     //音频播放器初始化
-    if(!m_auPlayer->open()){
+    if(!m_out->open(m_outSampleRate,m_outChannels)){
         qDebug()<<"audioPlayerInit  failed!" ;
         return false;
     }
@@ -102,8 +104,8 @@ void AudioThread::close()
 
     freeAtempoFilter();
 
-    if (m_auPlayer) {
-        m_auPlayer->close();
+    if (m_out) {
+        m_out->close();
     }
     m_audioPts.store(0);
 
@@ -114,7 +116,7 @@ void AudioThread::clear()
 {
     if (m_pktQue)   m_pktQue->clear();
     if (m_frameQue) m_frameQue->clear();
-    if (m_auPlayer) m_auPlayer->clear();   // 丢弃声卡缓冲里的残留，避免 seek 后先播出旧位置的一小段
+    if (m_out) m_out->clear();   // 丢弃声卡缓冲里的残留，避免 seek 后先播出旧位置的一小段
     pts = 0;
     m_audioPts.store(0);
 }
@@ -122,8 +124,8 @@ void AudioThread::clear()
 void AudioThread::setPause(bool isPause)
 {
     m_isPause = isPause;
-    if (m_auPlayer)
-        m_auPlayer->setPause(isPause);
+    if (m_out)
+        m_out->setPause(isPause);
 }
 
 void AudioThread::startAudio()
@@ -168,11 +170,11 @@ void AudioThread::sendPts(int64_t ptsMs)
 
 long long AudioThread::getPts()
 {
-    if (!m_auPlayer) return 0;
+    if (!m_out) return 0;
     // 最后写入的帧 pts"
     long long lastPts = m_audioPts.load();
     // 声卡未播时长
-    long long noPlayReal = m_auPlayer->getNoPlayMs();
+    long long noPlayReal = m_out->getNoPlayMs();
     // 换算成内容轴时长：输出样本 × speed = 内容样本
     long long noPlayContent = (long long)((double)noPlayReal
                        * m_currentSpeed.load());
@@ -187,21 +189,6 @@ void AudioThread::setSerial(int serial)
 {
     m_serial.store(serial);
 }
-
-void AudioThread::setVolume(double& pos)
-{
-    if(m_auPlayer){
-        qreal tmpPos = (qreal)pos;
-        m_auPlayer->setVolume(tmpPos);
-    }
-}
-
-double AudioThread::getVolume()
-{
-    return m_auPlayer->getVolume();
-}
-
-
 
 void AudioThread::decodeRun()
 {
@@ -467,7 +454,7 @@ void AudioThread::playRun()
             if (remain <= 0)
                 break;
 
-            int freeSize = m_auPlayer->getFree();
+            int freeSize = m_out->getFree();
 
             if (freeSize <= 0)
             {
@@ -477,7 +464,7 @@ void AudioThread::playRun()
 
             int writeSize = std::min(remain, freeSize);
 
-            int written = m_auPlayer->write(
+            int written = m_out->write(
                 audioFrame->data[0] + writtenTotal,
                 writeSize
                 );
@@ -567,9 +554,11 @@ bool AudioThread::isPlayFinished()
 {
     // 帧队列空 + 声卡缓冲空 = 真正播完
     if (m_frameQue && m_frameQue->size() > 0) return false;
-    if (m_auPlayer && m_auPlayer->getNoPlayMs() > 5) return false;  // 留 5ms 容差
+    if (m_out && m_out->getNoPlayMs() > 5) return false;  // 留 5ms 容差
     return true;
 }
+
+
 
 
 // 创建滤镜图：abuffer(输入) -> atempo(变速) -> abuffersink(输出)
@@ -660,3 +649,6 @@ void AudioThread::freeAtempoFilter()
     m_tempoCtx      = nullptr;
     m_buffersinkCtx = nullptr;
 }
+
+
+

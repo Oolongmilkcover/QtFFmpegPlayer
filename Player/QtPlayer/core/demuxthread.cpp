@@ -91,7 +91,7 @@ void DemuxThread::setMessageQueue(MessageQueue *msgQue)
     m_msgQue = msgQue;
 }
 
-bool DemuxThread::openFile(const char* url,VideoWidget* widget)
+bool DemuxThread::openFile(const char* url,PaintFrame cb , IAudioOutput* out)
 {
     if (url == 0 || url[0] == '\0' || !m_playerctx){
         return false;
@@ -233,7 +233,7 @@ bool DemuxThread::openFile(const char* url,VideoWidget* widget)
         m_width = vpara->width;
         m_height = vpara->height;
         if (m_hasVideo){
-            if(!m_videoDecodeThread->open(m_fmt_ctx->streams[m_videoStream],nullptr)){
+            if(!m_videoDecodeThread->open(m_fmt_ctx->streams[m_videoStream],cb)){
                 tmpRet = false;
                 qDebug()<<"m_videoDecodeThread->open failed";
             }
@@ -241,7 +241,7 @@ bool DemuxThread::openFile(const char* url,VideoWidget* widget)
     }
     if (m_hasAudio){
         //打开音频解码器和处理线程
-        if(!m_audioThread->open(m_fmt_ctx->streams[m_audioStream],nullptr)){
+        if(!m_audioThread->open(m_fmt_ctx->streams[m_audioStream],out)){
             qDebug() << "音频打开失败，降级为静音播放";
             /*
              * open() 是按「解码器 → 重采样 → 声卡 → atempo 滤镜」的顺序初始化的，
@@ -938,13 +938,6 @@ void DemuxThread::videoCallSeek(long long ms)
 bool DemuxThread::getIsExit() const
 {
     return m_playerctx->getIsExit();
-}
-
-void DemuxThread::setVolume(double& pos)
-{
-    if(m_audioThread){
-        m_audioThread->setVolume(pos);
-    }
 }
 
 void DemuxThread::setHasPlayList(bool has)

@@ -7,6 +7,9 @@
 #include "core/perfclock.h"
 class PlayerCore;
 struct PlayerMessage;
+class VideoWidget;
+class AudioPlayer;
+
 QT_BEGIN_NAMESPACE
 namespace Ui {
 class Player;
@@ -126,6 +129,9 @@ private:
     PlayerCore*  m_playerCore;
 
     void setEventCallback();
+
+    VideoWidget* m_widget;
+    AudioPlayer* m_auPlayer;
 
     bool m_isPause = false;
 

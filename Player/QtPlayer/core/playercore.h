@@ -21,13 +21,13 @@ public:
     void postMessage(PlayerMessage&& msg);
     void postMessage(int what = 0 ,int arg1 = 0,int arg2 = 0,void* obj = nullptr,std::function<void(void*)> free_l = nullptr);
 
+
     //音视频输出管道
     using PlayCallBack = std::function<void(AVFrame* frame)>;
     void setAudioPlayCallBack(PlayCallBack cb);
     void setVideoPlayCallBack(PlayCallBack cb);
 
 private:
-
 
     void setMessageHandler();
 
@@ -40,6 +40,7 @@ private:
     PlayerContext* m_playerctx;
 
     DemuxThread dt;
+
 };
 
 #endif // PLAYERCORE_H

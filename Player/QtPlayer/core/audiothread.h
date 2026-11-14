@@ -1,9 +1,8 @@
 #ifndef AUDIOTHREAD_H
 #define AUDIOTHREAD_H
 
-#include "platform/audioplayer.h"
 #include "core/decodethread.h"
-
+#include "core/iaudiooutput.h"
 #include <thread>
 #include <atomic>
 #include <mutex>
@@ -18,7 +17,7 @@ public:
     ~AudioThread();
 
     // 初始化音频
-    bool open(AVStream *audioStream , PaintFrame cb);
+    bool open(AVStream *audioStream , IAudioOutput* out);
 
     // 关闭
     void close();
@@ -39,9 +38,6 @@ public:
 
     void setSerial(int serial);
 
-    void setVolume(double& pos);
-
-    double getVolume();
 
     // 倍速：只设置目标速度，实际重建在解码线程做（无锁）
     void setSpeed(double speed);          // 外部（GUI）调用，仅写原子变量
@@ -73,8 +69,7 @@ private:
 private:
 
     // 音频播放器
-    AudioPlayer *m_auPlayer = nullptr;
-    PaintFrame m_audioPlayer = nullptr;
+    IAudioOutput* m_out = nullptr;
 
 
     // 重采样上下文
@@ -131,6 +126,17 @@ private:
     int64_t m_ptsBase = 0;
     // 基准是否已用第一帧输入锚定
     bool    m_ptsAnchorReady = false;
+};
+
+class NullAudioPlayer : public IAudioOutput {   // 无设备 / CI / 单元测试用
+public:
+    bool open(int, int) override { return true; }
+    void close() override {}
+    void clear() override {}
+    int  write(const uint8_t*, int bytes) override { return bytes; }   // 假装都写进去了
+    int  getFree() override { return 1 << 20; }
+    long long getNoPlayMs() override { return 0; }                      // 时钟 = 帧 PTS，一路快进
+    void setPause(bool) override {}
 };
 
 #endif

@@ -58,6 +58,7 @@ set(OP_APP_SOURCES
 #            视频解码/渲染、音频都已改成 std::thread；DemuxThread 暂时仍是 QThread（它还有信号连着 app）。
 set(OP_CORE_SOURCES
     core/perfclock.h
+    core/iaudiooutput.h
     core/packetqueue.h      core/packetqueue.cpp
     core/framequeue.h       core/framequeue.cpp
     core/decodethread.h     core/decodethread.cpp
@@ -84,6 +85,7 @@ qt_add_executable(QtPlayer
     ${OP_CORE_SOURCES}
     ${OP_PLATFORM_SOURCES}
     resources/res.qrc
+
 )
 
 # ============================ 链接库 ============================
