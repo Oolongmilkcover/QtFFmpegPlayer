@@ -1,5 +1,5 @@
 #include "core/audiothread.h"
-#include <QDebug>
+#include "core/log.h"
 #include <algorithm>
 #include <chrono>
 extern"C"{
@@ -56,22 +56,22 @@ bool AudioThread::open(AVStream *audioStream, IAudioOutput* out)
     m_serial.store(0);
     //音频解码器初始化
     if(!codecInit(para)){
-        qDebug()<<"audioDecodeInit failed!" ;
+        logDebug()<<"audioDecodeInit failed!" ;
         return false;
     }
     //重采样初始化
     if(!resampleInit()){
-        qDebug()<<"resampleInit  failed!" ;
+        logDebug()<<"resampleInit  failed!" ;
         return false;
     }
     //音频播放器初始化
     if(!m_out->open(m_outSampleRate,m_outChannels)){
-        qDebug()<<"audioPlayerInit  failed!" ;
+        logDebug()<<"audioPlayerInit  failed!" ;
         return false;
     }
     // 初始化倍速滤镜（默认 1.0 倍）
     if (!initAtempoFilter(1.0)) {
-        qDebug() << "initAtempoFilter failed!";
+        logDebug() << "initAtempoFilter failed!";
         return false;
     }
 
@@ -158,8 +158,8 @@ void AudioThread::startAudio()
         this
         );
 
-    qDebug() << "Audio decode thread started";
-    qDebug() << "Audio play thread started";
+    logDebug() << "Audio decode thread started";
+    logDebug() << "Audio play thread started";
 }
 
 void AudioThread::sendPts(int64_t ptsMs)
@@ -181,7 +181,7 @@ long long AudioThread::getPts()
     long long clock = lastPts - noPlayContent;
     if (clock < 0) clock = 0;
     pts.store(clock);
-    // qDebug()<<"clock"<<clock;
+    // logDebug()<<"clock"<<clock;
     return clock;
 }
 
@@ -192,7 +192,7 @@ void AudioThread::setSerial(int serial)
 
 void AudioThread::decodeRun()
 {
-    qDebug() << "Audio decode thread running...";
+    logDebug() << "Audio decode thread running...";
     while (!m_isExit)
     {
         //seek 后的复位：清 swr 延迟 + 重建 atempo（丢弃 seek 前残留）
@@ -209,7 +209,7 @@ void AudioThread::decodeRun()
         //速度变化时在解码线程里重建滤镜
         double desired = m_desiredSpeed.load();
         if (desired != m_currentSpeed.load()) {
-            qDebug() << "speed change:" << m_currentSpeed << "->" << desired;
+            logDebug() << "speed change:" << m_currentSpeed << "->" << desired;
             if (initAtempoFilter(desired)) {
                 // 重建成功，丢弃旧滤镜内部的残留数据（可接受）
                 std::lock_guard<std::mutex> lock(m_auMutex);
@@ -220,7 +220,7 @@ void AudioThread::decodeRun()
             } else {
                 // 重建失败：把目标速度改回当前值，避免死循环重试
                 m_desiredSpeed.store(m_currentSpeed);
-                qDebug() << "重建失败：把目标速度改回当前值，避免死循环重试" << desired;
+                logDebug() << "重建失败：把目标速度改回当前值，避免死循环重试" << desired;
             }
         }
 
@@ -315,7 +315,7 @@ void AudioThread::decodeRun()
                 frame->m_serial = pktSerial;
                 av_frame_free(&resampled);
                 m_frameQue->push();
-                //qDebug()<<tmpPts;
+                //logDebug()<<tmpPts;
             }
             else
             {
@@ -324,7 +324,7 @@ void AudioThread::decodeRun()
                 //  - 2 倍速时，可能送两帧才吐一帧
                 //  - 输出帧的 pts 由滤镜按处理样本数自动推算（毫秒）
                 if (av_buffersrc_add_frame(m_buffersrcCtx, resampled) < 0) {
-                    qDebug() << "buffersrc_add_frame failed";
+                    logDebug() << "buffersrc_add_frame failed";
                     av_frame_free(&resampled);
                     continue;
                 }
@@ -333,7 +333,7 @@ void AudioThread::decodeRun()
 
                 // 从滤镜取输出帧，可能有 0 帧或多帧
                 while (true) {
-                    // qDebug()<<"AVFrame *outFrame = av_frame_alloc() 前";
+                    // logDebug()<<"AVFrame *outFrame = av_frame_alloc() 前";
                     AVFrame *outFrame = av_frame_alloc();
                     if (!outFrame) break;
 
@@ -383,12 +383,12 @@ void AudioThread::decodeRun()
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
-    qDebug() << "Audio decode thread end...";
+    logDebug() << "Audio decode thread end...";
 }
 
 void AudioThread::playRun()
 {
-    qDebug() << "Audio play thread running...";
+    logDebug() << "Audio play thread running...";
 
     while (!m_isExit)
     {
@@ -419,7 +419,7 @@ void AudioThread::playRun()
         {
             av_frame_free(&audioFrame);
             m_frameQue->next();
-            qDebug()<<"!audioFrame || audioFrame->nb_samples <= 0";
+            logDebug()<<"!audioFrame || audioFrame->nb_samples <= 0";
             continue;
         }
 
@@ -431,7 +431,7 @@ void AudioThread::playRun()
         if (bytesPerSample <= 0)
         {
             m_frameQue->next();
-            qDebug()<<"bytesPerSample <= 0";
+            logDebug()<<"bytesPerSample <= 0";
             continue;
         }
 
@@ -495,7 +495,7 @@ void AudioThread::playRun()
         // 消费Frame
         m_frameQue->next();
     }
-    qDebug() << "Audio play thread end...";
+    logDebug() << "Audio play thread end...";
 }
 
 
@@ -528,13 +528,13 @@ bool AudioThread::resampleInit()
         0, nullptr
         );
     if (ret < 0) {
-        qDebug() << "重采样创建失败";
+        logDebug() << "重采样创建失败";
         return false;
     }
     //重采样初始化
     ret = swr_init(m_swr_ctx);
     if(ret<0){
-        qDebug() << "重采样初始化失败";
+        logDebug() << "重采样初始化失败";
         swr_free(&m_swr_ctx);  //失败必须释放！！！
         return false;
     }
@@ -569,7 +569,7 @@ bool AudioThread::initAtempoFilter(double speed)
     // 1. 分配滤镜图
     m_filterGraph = avfilter_graph_alloc();
     if (!m_filterGraph) {
-        qDebug() << "avfilter_graph_alloc failed";
+        logDebug() << "avfilter_graph_alloc failed";
         return false;
     }
     // 2. 获取滤镜工厂
@@ -587,7 +587,7 @@ bool AudioThread::initAtempoFilter(double speed)
              m_outChannels == 2 ? "stereo" : "mono");
     if (avfilter_graph_create_filter(&m_buffersrcCtx, srcFilter, "in",
                                      srcArgs, nullptr, m_filterGraph) < 0) {
-        qDebug() << "create abuffer failed";
+        logDebug() << "create abuffer failed";
         freeAtempoFilter();
         return false;
     }
@@ -598,7 +598,7 @@ bool AudioThread::initAtempoFilter(double speed)
         snprintf(tempoArgs, sizeof(tempoArgs), "tempo=%.3f", speed);
         if (avfilter_graph_create_filter(&m_tempoCtx, tempoFilter, "tempo",
                                          tempoArgs, nullptr, m_filterGraph) < 0) {
-            qDebug() << "create atempo failed";
+            logDebug() << "create atempo failed";
             freeAtempoFilter();
             return false;
         }
@@ -606,24 +606,24 @@ bool AudioThread::initAtempoFilter(double speed)
     // 5. 创建"汇"滤镜
     if (avfilter_graph_create_filter(&m_buffersinkCtx, sinkFilter, "out",
                                      nullptr, nullptr, m_filterGraph) < 0) {
-        qDebug() << "create abuffersink failed";
+        logDebug() << "create abuffersink failed";
         freeAtempoFilter();
         return false;
     }
     // 6. 连接：源 -> atempo -> 汇
     if (avfilter_link(m_buffersrcCtx, 0, m_tempoCtx, 0) < 0) {
-        qDebug() << "link src->tempo failed";
+        logDebug() << "link src->tempo failed";
         freeAtempoFilter();
         return false;
     }
     if (avfilter_link(m_tempoCtx, 0, m_buffersinkCtx, 0) < 0) {
-        qDebug() << "link tempo->sink failed";
+        logDebug() << "link tempo->sink failed";
         freeAtempoFilter();
         return false;
     }
     // 7. 配置整个滤镜图（校验格式、分配内部缓冲）
     if (avfilter_graph_config(m_filterGraph, nullptr) < 0) {
-        qDebug() << "avfilter_graph_config failed";
+        logDebug() << "avfilter_graph_config failed";
         freeAtempoFilter();
         return false;
     }
@@ -632,7 +632,7 @@ bool AudioThread::initAtempoFilter(double speed)
     m_outSamplesTotal = 0;
     m_ptsAnchorReady = false;
 
-    qDebug() << "atempo filter ready, speed =" << speed;
+    logDebug() << "atempo filter ready, speed =" << speed;
     return true;
 }
 

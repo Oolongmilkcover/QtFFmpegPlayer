@@ -1,10 +1,11 @@
 #include "core/demuxthread.h"
+#include "core/log.h"
+#include <cctype>
 #include "core/audiothread.h"
 #include "core/videodecodethread.h"
 #include "core/videorenderthread.h"
 #include "core/messagequeue.h"
 #include "platform/videowidget.h"
-#include <QDebug>
 
 
 extern "C" {
@@ -37,11 +38,18 @@ static constexpr int64_t NETWORK_RW_TIMEOUT_US = 5 * 1000 * 1000;
  * 要区分的话得等 find_stream_info 之后看 duration 是否为 AV_NOPTS_VALUE（是否直播），
  * 那会让判定时机晚于 UI 初始化，所以这里先用简单确定的规则。
  */
-static bool isStreamUrl(const QString &url)
+static std::string toLowerAscii(std::string s)
 {
-    const int sep = url.indexOf(QLatin1String("://"));
-    if (sep <= 0) return false;                 //没有协议头 → 本地路径
-    return url.left(sep).compare(QLatin1String("file"), Qt::CaseInsensitive) != 0;
+    for (char &c : s)
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return s;
+}
+
+static bool isStreamUrl(const std::string &url)
+{
+    const auto sep = url.find("://");
+    if (sep == std::string::npos || sep == 0) return false;   //没有协议头 → 本地路径
+    return toLowerAscii(url.substr(0, sep)) != "file";
 }
 
 DemuxThread::DemuxThread(QObject *parent)
@@ -102,7 +110,7 @@ bool DemuxThread::openFile(const char* url,PaintFrame cb , IAudioOutput* out)
     m_serial.store(0); //每次加载时serial清零
     m_seekPauseing.store(false); //兜底：清掉上一次可能残留的“seek 进行中”
     //这次打开的是不是网络流媒体（先算出来，成功后再写进成员，失败不污染状态）
-    const bool streamMedia = isStreamUrl(QString::fromUtf8(url));
+    const bool streamMedia = isStreamUrl(url);
 
     bool tmpRet = true;
     {
@@ -124,7 +132,7 @@ bool DemuxThread::openFile(const char* url,PaintFrame cb , IAudioOutput* out)
         if (!m_fmt_ctx) {
             m_fmt_ctx = avformat_alloc_context();
             if (!m_fmt_ctx) {
-                qDebug() << "avformat_alloc_context failed";
+                logDebug() << "avformat_alloc_context failed";
                 closeAVThread();
                 return false;
             }
@@ -140,7 +148,7 @@ bool DemuxThread::openFile(const char* url,PaintFrame cb , IAudioOutput* out)
         if (ret < 0) {
             char err_buf[AV_ERROR_MAX_STRING_SIZE];
             av_strerror(ret, err_buf, sizeof(err_buf));
-            qDebug()<< "open" << url << "failed!:" << err_buf;
+            logDebug()<< "open" << url << "failed!:" << err_buf;
             // 释放已创建的线程
             closeAVThread();
             if (m_fmt_ctx) {
@@ -152,7 +160,7 @@ bool DemuxThread::openFile(const char* url,PaintFrame cb , IAudioOutput* out)
             //中断回调已在 open 之前挂好（见上），这里直接读流信息
             ret = avformat_find_stream_info(m_fmt_ctx, NULL);
             if (ret < 0) {
-                qDebug()<< "读取流信息失败";
+                logDebug()<< "读取流信息失败";
                 avformat_close_input(&m_fmt_ctx);
                 // 释放已创建的线程
                 closeAVThread();
@@ -180,9 +188,9 @@ bool DemuxThread::openFile(const char* url,PaintFrame cb , IAudioOutput* out)
                 totalMs = sec*1000; // 换算成毫秒
             } else {
                 totalMs = 0;
-                qDebug()<<"时长未知（直播流 / 无 duration 元数据），按无进度条处理";
+                logDebug()<<"时长未知（直播流 / 无 duration 元数据），按无进度条处理";
             }
-            qDebug()<<"totalMs:" << totalMs ;
+            logDebug()<<"totalMs:" << totalMs ;
             //打印视频流详细信息
             av_dump_format(m_fmt_ctx, 0, url, 0);
         } else {
@@ -194,7 +202,7 @@ bool DemuxThread::openFile(const char* url,PaintFrame cb , IAudioOutput* out)
             m_videoStream = av_find_best_stream(m_fmt_ctx,AVMEDIA_TYPE_VIDEO,-1,-1,NULL,0);
             m_audioStream = av_find_best_stream(m_fmt_ctx,AVMEDIA_TYPE_AUDIO,-1,-1,NULL,0);
             if (m_videoStream < 0 && m_audioStream < 0){
-                qDebug() << "没有找到任何音视频流";
+                logDebug() << "没有找到任何音视频流";
                 // 释放已创建的线程
                 closeAVThread();
                 tmpRet = false;
@@ -209,13 +217,13 @@ bool DemuxThread::openFile(const char* url,PaintFrame cb , IAudioOutput* out)
             if(m_fmt_ctx->iformat != nullptr)
             {
 
-                m_containerName = QString::fromUtf8(m_fmt_ctx->iformat->name);
-                qDebug()<<"容器名称(iformat->name): "<<m_containerName;
+                m_containerName = m_fmt_ctx->iformat->name ? m_fmt_ctx->iformat->name : "";
+                logDebug()<<"容器名称(iformat->name): "<<m_containerName;
                 //容器属于纯音频集合
-                if(m_audioOnlyFormat.contains(m_containerName.toLower()))
+                if(m_audioOnlyFormat.count(toLowerAscii(m_containerName)) > 0)
                 {
                     m_disableSeekFlag = true;
-                    qDebug()<<"检测到音频文件";
+                    logDebug()<<"检测到音频文件";
                 }
             }
         }
@@ -235,14 +243,14 @@ bool DemuxThread::openFile(const char* url,PaintFrame cb , IAudioOutput* out)
         if (m_hasVideo){
             if(!m_videoDecodeThread->open(m_fmt_ctx->streams[m_videoStream],cb)){
                 tmpRet = false;
-                qDebug()<<"m_videoDecodeThread->open failed";
+                logDebug()<<"m_videoDecodeThread->open failed";
             }
         }
     }
     if (m_hasAudio){
         //打开音频解码器和处理线程
         if(!m_audioThread->open(m_fmt_ctx->streams[m_audioStream],out)){
-            qDebug() << "音频打开失败，降级为静音播放";
+            logDebug() << "音频打开失败，降级为静音播放";
             /*
              * open() 是按「解码器 → 重采样 → 声卡 → atempo 滤镜」的顺序初始化的，
              * 失败点可能落在任意一步之后：例如 atempo 滤镜建失败时，
@@ -276,7 +284,7 @@ bool DemuxThread::openFile(const char* url,PaintFrame cb , IAudioOutput* out)
             applySpeed(1.0);
         }
         m_isStreamMedia.store(streamMedia);
-        qDebug()<<"openFile success" << (streamMedia ? "(流媒体：快进/快退/逐帧/倍速/上下集已关闭)" : "(本地文件)");
+        logDebug()<<"openFile success" << (streamMedia ? "(流媒体：快进/快退/逐帧/倍速/上下集已关闭)" : "(本地文件)");
     }
     if (m_hasAudio) m_audioTimebase = m_fmt_ctx->streams[m_audioStream]->time_base;
     if (m_hasVideo) m_videoTimebase = m_fmt_ctx->streams[m_videoStream]->time_base;
@@ -561,7 +569,7 @@ void DemuxThread::closeAVThread()
 
 AVPacket *DemuxThread::readPkt()
 {
-    //qDebug()<<"readPkt";
+    //logDebug()<<"readPkt";
     m_mutex.lock();
     bool valid = m_fmt_ctx != nullptr;
     m_mutex.unlock();
@@ -708,7 +716,7 @@ void DemuxThread::run()
         }
         //队列满没推进去 → 留着下次重试，不能丢包
         if(!pushed) m_pendingPkt = pkt;
-        //qDebug()<<"mutexThread->push";
+        //logDebug()<<"mutexThread->push";
         msleep(1);
     }
 
@@ -842,7 +850,7 @@ void DemuxThread::doBackwardRefill()
 {
     // //---
     // const qint64 startNs = perfNowNs();
-    // qDebug() << "[PERF] doBackwardRefill entry, startNs = " << startNs <<" ns";
+    // logDebug() << "[PERF] doBackwardRefill entry, startNs = " << startNs <<" ns";
     // //----
 
     if(!m_videoDecodeThread){
@@ -910,7 +918,7 @@ void DemuxThread::doBackwardRefill()
 
     // const qint64 endNs  = perfNowNs();
     // const qint64 costNs = endNs - startNs;
-    // qDebug().nospace()
+    // logDebug().nospace()
     //     << "[PERF] =====  回填耗时 = "
     //     << QString::number(costNs / 1e6, 'f', 2) << " ms";
 

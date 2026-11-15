@@ -1,4 +1,5 @@
 #include "core/videodecodethread.h"
+#include "core/log.h"
 #include "core/videorenderthread.h"
 #include "platform/videowidget.h"
 
@@ -7,7 +8,6 @@ extern"C"{
 #include "libavcodec/packet.h"
 #include "libavcodec/avcodec.h"
 }
-#include <QDebug>
 #include <chrono>
 #include <thread>
 
@@ -80,7 +80,7 @@ void VideoDecodeThread::wait()
 
 bool VideoDecodeThread::open(AVStream* videoStream , PaintFrame cb)
 {
-    qDebug()<< "VideoDecodeThread::open!";
+    logDebug()<< "VideoDecodeThread::open!";
     if (!videoStream)return false;
     close();  //停止上一轮残留线程
     //上一轮的"尾帧/播完"标志作废（否则新文件会被当成已播完）
@@ -108,8 +108,8 @@ bool VideoDecodeThread::open(AVStream* videoStream , PaintFrame cb)
         m_videoRenderThread->restart();
         m_videoRenderThread->resetFrameClock();
     }
-    qDebug()<< "video Decode open !";
-    qDebug()<< "video Render open !";
+    logDebug()<< "video Decode open !";
+    logDebug()<< "video Render open !";
     return ret;
 }
 
@@ -179,7 +179,7 @@ void VideoDecodeThread::paint(AVFrame* frame)
 
 void VideoDecodeThread::run()
 {
-    qDebug() << "VideoDecodeThread running...";
+    logDebug() << "VideoDecodeThread running...";
     while(!m_isExit){
         if (m_isPause.load())
         {
@@ -207,7 +207,7 @@ void VideoDecodeThread::run()
         }
         //开始解码
         if(!send(packet)){
-            qDebug() << "!send(packet)";
+            logDebug() << "!send(packet)";
             continue;
         }
         //一包多帧，recv到FrameQueue
@@ -241,7 +241,7 @@ void VideoDecodeThread::run()
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
-    qDebug() << "VideoDecodeThread end...";
+    logDebug() << "VideoDecodeThread end...";
 }
 
 void VideoDecodeThread::setLastSome(bool lastSome)
@@ -264,7 +264,7 @@ long long VideoDecodeThread::getVideoRenderPts()
 void VideoDecodeThread::setFps(AVStream* videoStream)
 {
     m_videoRenderThread->setFps(av_q2d(videoStream->avg_frame_rate));  // 或从 AVStream 获取
-    //qDebug()<<"av_q2d(videoStream->avg_frame_rate)"<<av_q2d(videoStream->avg_frame_rate);
+    //logDebug()<<"av_q2d(videoStream->avg_frame_rate)"<<av_q2d(videoStream->avg_frame_rate);
 }
 
 double VideoDecodeThread::getFps() const
@@ -429,7 +429,7 @@ bool VideoDecodeThread::refillBackward(int64_t boundaryMs, int serial,
         for (AVFrame*& f : batch) av_frame_free(&f);
         batch.clear();
     }
-    qDebug() << "refillBackward: 边界(ms)" << (long long)boundaryMs
+    logDebug() << "refillBackward: 边界(ms)" << (long long)boundaryMs
              << "回填" << got << "帧" << "范围(ms)[" << firstPts << "~" << lastPts << "]"
              << (reached ? "(到达边界)" : "(读到文件尾)")
              << "ok:" << ok;

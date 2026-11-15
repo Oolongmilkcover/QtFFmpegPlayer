@@ -1,6 +1,5 @@
 #include "core/framequeue.h"
 #include <algorithm>
-#include <QDebug>
 
 FrameQueue::FrameQueue(int max_size, bool keep_last)
     :m_maxSize(std::clamp(max_size, 1, MAX_QUEUE_SIZE))// 上限锁死 MAX_QUEUE_SIZE

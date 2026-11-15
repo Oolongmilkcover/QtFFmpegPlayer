@@ -1,5 +1,5 @@
 #include "core/decodethread.h"
-#include <QDebug>
+#include "core/log.h"
 extern "C"
 {
 #include<libavcodec/avcodec.h>
@@ -16,7 +16,7 @@ DecodeThread::~DecodeThread()
     setExit(true); // 析构时才设为 true
     // 线程归子类所有：VideoDecodeThread::close() / AudioThread::close() 里已经 join
     close();
-    qDebug()<<"~DecodeThread";
+    logDebug()<<"~DecodeThread";
 }
 
 void DecodeThread::push(AVPacket *pkt , int serial)
@@ -76,7 +76,7 @@ bool DecodeThread::send(std::unique_ptr<Packet>& pkt)
     {
         std::lock_guard<std::mutex> lock(m_mutex);
         if(!m_codec_ctx){
-            qDebug()<<"!m_codec_ctx";
+            logDebug()<<"!m_codec_ctx";
             return false;
         }
         ret= avcodec_send_packet(m_codec_ctx,pkt->m_pkt);
@@ -101,7 +101,7 @@ bool DecodeThread::send(AVPacket* pkt)
     {
         std::lock_guard<std::mutex> lock(m_mutex);
         if(!m_codec_ctx){
-            qDebug()<<"!m_codec_ctx";
+            logDebug()<<"!m_codec_ctx";
             av_packet_free(&pkt);
             return false;
         }
@@ -165,7 +165,7 @@ bool DecodeThread::codecInit(AVCodecParameters *para)
     if (ret != 0) {
         char err_buf[AV_ERROR_MAX_STRING_SIZE];
         av_strerror(ret, err_buf, sizeof(err_buf));
-        qDebug()<< "avcodec_open2 failed!:" << err_buf;
+        logDebug()<< "avcodec_open2 failed!:" << err_buf;
         avcodec_free_context(&m_codec_ctx);
         m_codec_ctx = nullptr;
         return false;

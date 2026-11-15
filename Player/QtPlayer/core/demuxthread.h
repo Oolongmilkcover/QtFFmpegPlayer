@@ -11,7 +11,8 @@ Seek 功能
 #include "core/playercontext.h"
 #include "core/perfclock.h"
 #include "libavutil/rational.h"
-#include <QSet>
+#include <set>
+#include <string>
 #include <QThread>
 // 同上：FFmpeg 类型一律用 struct 前置声明，避免与其它 TU 的修饰名不一致（LNK2019）
 struct AVFormatContext;
@@ -203,8 +204,8 @@ private:
     //正在处理的 seek 结束后应该恢复成什么暂停状态
     std::atomic<bool> m_pauseAfterSeek = false;
 
-    // 实际解析出来的封装名
-    QString m_containerName;
+    // 实际解析出来的封装名（std::string，core 不再用 QString）
+    std::string m_containerName;
     std::atomic<bool> m_disableSeekFlag{false};
 
     /*
@@ -217,7 +218,7 @@ private:
 
 
     // 纯音频，需要禁用Seek功能 的格式集合
-    const QSet<QString> m_audioOnlyFormat = {
+    const std::set<std::string> m_audioOnlyFormat = {
         "mp3",
         "aac",
         "flac",

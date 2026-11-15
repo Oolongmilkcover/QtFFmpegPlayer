@@ -3,7 +3,8 @@
 
 #include <thread>
 #include <atomic>
-#include <QElapsedTimer>
+#include <chrono>
+#include <cstdint>
 #include "core/framequeue.h"
 
 class VideoWidget;
@@ -17,8 +18,25 @@ class VideoWidget;
 class VideoRenderThread
 {
 private:
-    QElapsedTimer m_loopTimer;
+    /*
+     * 循环基准时钟（取代 QElapsedTimer）
+     *
+     * steady_clock 是单调时钟，不受系统时间调整影响，正好对应 QElapsedTimer 的语义；
+     * 原来 start()/invalidate() 的成对调用收成 restartLoopTimer() 一个动作。
+     */
+    using LoopClock = std::chrono::steady_clock;
+    LoopClock::time_point m_loopStart = LoopClock::now();
     bool firstFrame = true;
+
+    void restartLoopTimer() { m_loopStart = LoopClock::now(); }
+
+    long long loopElapsedMs() const
+    {
+        return std::chrono::duration_cast<std::chrono::milliseconds>(
+                   LoopClock::now() - m_loopStart)
+            .count();
+    }
+
 public:
 
     explicit VideoRenderThread(FrameQueue* frameQueue);
@@ -72,7 +90,7 @@ protected:
 
 private:
 
-    void sleepUntil(qint64 targetWallMs);
+    void sleepUntil(int64_t targetWallMs);
 
     void renderFrame(Frame* frame);
 

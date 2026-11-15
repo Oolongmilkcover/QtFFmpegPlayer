@@ -1,7 +1,6 @@
 #ifndef FRAMEQUEUE_H
 #define FRAMEQUEUE_H
 
-#include <QObject>
 #include <array>
 #include <deque>
 #include <functional>
@@ -59,9 +58,8 @@ struct Frame{
  *    逐帧回退就是让 m_cursor 往前走；走到头（front）就通过 onNeedRefill
  *    请求 demux 线程向后 seek 一小段并回填一批更早的帧。
  */
-class FrameQueue  : public QObject
+class FrameQueue
 {
-    Q_OBJECT
 public:
     //逐帧结果
     enum StepStatus{

@@ -1,7 +1,5 @@
 #include "core/packetqueue.h"
 
-#include <QDebug>
-
 PacketQueue::PacketQueue(int maxSize)
     : m_maxSize(maxSize > 100 ? maxSize : 100)
 {

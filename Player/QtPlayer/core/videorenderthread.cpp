@@ -1,14 +1,14 @@
 #include "core/videorenderthread.h"
+#include "core/log.h"
 #include "platform/videowidget.h"
 extern "C"
 {
 #include <libavutil/frame.h>
 }
-#include <QDebug>
-#include <QMetaObject>
-#include <QPointer>
 #include <chrono>
 #include <thread>
+#include <algorithm>
+#include <cstdint>
 
 #define SPIN_THRESHOLD_MS 2
 #define SYNC_THRESHOLD 30
@@ -41,7 +41,7 @@ void VideoRenderThread::setFps(double fps)
     m_fps = fps;
     m_frameDurationMs = 1000.0 / m_fps / m_speed;
     pts = 0;
-    //qDebug()<<"视频fps:"<<m_fps;
+    //logDebug()<<"视频fps:"<<m_fps;
 }
 
 void VideoRenderThread::setPause(bool isPause)
@@ -156,16 +156,15 @@ void VideoRenderThread::run()
     // static long long readenCount = -1;
     //-----------
 
-    qDebug() << "VideoRenderThread running...";
+    logDebug() << "VideoRenderThread running...";
 
     if (!m_frameQueue)
     {
-        qDebug() << "VideoRenderThread: FrameQueue is null!";
+        logDebug() << "VideoRenderThread: FrameQueue is null!";
         return;
     }
-    m_loopTimer.invalidate();
-    m_loopTimer.start();
-    qint64 lastFrameWallMs = 0;
+    restartLoopTimer();
+    int64_t lastFrameWallMs = 0;
 
     while (!m_isExit)
     {
@@ -271,7 +270,7 @@ void VideoRenderThread::run()
 
 
 
-        qint64 nowWall = m_loopTimer.elapsed();
+        int64_t nowWall = loopElapsedMs();
 
         //没有音频 || 音频先结束了视频得正常播放 , 视频做主时钟
         if ( !hasAudio || lastSome.load())
@@ -293,12 +292,12 @@ void VideoRenderThread::run()
             // 防御：间隔异常（<=0 或超大）
             if (sleepMs < 0) sleepMs = 0;
             if (sleepMs > 500) sleepMs = m_frameDurationMs;   // 丢帧后的兜底，别睡死
-            qint64 renderStart = m_loopTimer.elapsed();
+            int64_t renderStart = loopElapsedMs();
             renderFrame(frame);
-            qint64 renderCost = m_loopTimer.elapsed() - renderStart;
+            int64_t renderCost = loopElapsedMs() - renderStart;
             m_frameQueue->next();
             // 目标 = 渲染开始时间 + 该睡的时间 - 渲染耗时
-            qint64 target = m_loopTimer.elapsed() + sleepMs - renderCost;
+            int64_t target = loopElapsedMs() + sleepMs - renderCost;
             sleepUntil(target);
             m_lastFramePts.store(videoPts);
             continue;
@@ -308,8 +307,8 @@ void VideoRenderThread::run()
         // if(readenCount != -1){
         //     //五分钟的丢帧率
         //     if(loseTimer.elapsed() >= 5*60*1000 ){
-        //         qDebug()<<"shown frames:" << readenCount;
-        //         qDebug()<<"lose frames:"<< loseFrameCount;
+        //         logDebug()<<"shown frames:" << readenCount;
+        //         logDebug()<<"lose frames:"<< loseFrameCount;
         //     }
         //     readenCount++;
         // }
@@ -317,28 +316,28 @@ void VideoRenderThread::run()
 
         //视频-音频
         long long diff = videoPts - audioPts;
-        qint64 compensate = 0;
+        int64_t compensate = 0;
         if (diff > SYNC_THRESHOLD) {
-            compensate = qMin<qint64>((diff - SYNC_THRESHOLD) / 2, m_frameDurationMs);
+            compensate = std::min<int64_t>((diff - SYNC_THRESHOLD) / 2, m_frameDurationMs);
             if(m_lastAudio_pts == audioPts){
                 compensate = 0;
             }
         } else if (diff < -SYNC_THRESHOLD) {
-            compensate = qMax<qint64>((diff + SYNC_THRESHOLD) / 2, -m_frameDurationMs);
+            compensate = std::max<int64_t>((diff + SYNC_THRESHOLD) / 2, -m_frameDurationMs);
         }
 
         m_lastAudio_pts = audioPts;
-        qint64 renderStart = m_loopTimer.elapsed();
-        //qDebug()<<"videoPts:"<<videoPts<<",audioPts:"<<audioPts<<",diff:"<<diff;
+        int64_t renderStart = loopElapsedMs();
+        //logDebug()<<"videoPts:"<<videoPts<<",audioPts:"<<audioPts<<",diff:"<<diff;
         //视频超前或者基本同步
 
         if (diff >= -SYNC_THRESHOLD )
         {
             m_maxFrameDrop = 5;
             renderFrame(frame);
-            qint64 renderCost = m_loopTimer.elapsed() - renderStart;
+            int64_t renderCost = loopElapsedMs() - renderStart;
             m_frameQueue->next();
-            qint64 target = nowWall + m_frameDurationMs - renderCost + compensate;
+            int64_t target = nowWall + m_frameDurationMs - renderCost + compensate;
             sleepUntil(target);
             if (diff > SYNC_THRESHOLD)
             {
@@ -346,7 +345,7 @@ void VideoRenderThread::run()
                 //正常播放后再开始统计丢帧率
                 // if(loseFrameCount == -1 && readenCount == -1){
                 //     loseTimer.start();
-                //     qDebug()<<"开始计算5分钟内的丢帧数";
+                //     logDebug()<<"开始计算5分钟内的丢帧数";
                 //     loseFrameCount = 0;
                 //     readenCount = 1;
                 // }
@@ -356,7 +355,7 @@ void VideoRenderThread::run()
         //else
         else{
             // 落后音频：丢帧
-            //qDebug() << "落后音频：丢帧";
+            //logDebug() << "落后音频：丢帧";
             //-----------
             // if(loseFrameCount!=-1){
             //     loseFrameCount++;
@@ -373,20 +372,20 @@ void VideoRenderThread::run()
 
         }
     }
-    qDebug() << "VideoRenderThread end...";
+    logDebug() << "VideoRenderThread end...";
 }
 
-const qint64 SLEEP_GRANULARITY = 15;   // Windows 睡眠粒度
-void VideoRenderThread::sleepUntil(qint64 targetWallMs)
+const int64_t SLEEP_GRANULARITY = 15;   // Windows 睡眠粒度
+void VideoRenderThread::sleepUntil(int64_t targetWallMs)
 {
     while (!m_isExit)
     {
-        qint64 now = m_loopTimer.elapsed();
-        qint64 remain = targetWallMs - now;
+        int64_t now = loopElapsedMs();
+        int64_t remain = targetWallMs - now;
         // 正常退出：时间到了，或 remain 异常（计时器失效导致的负数/超大值）
         if (remain <= 0 ) break;
         if (now < 0){
-            m_loopTimer.invalidate();
+            restartLoopTimer();
             break;
         }
         // 额外防御：remain 不可能超过 targetWallMs（除非 targetWallMs 本身异常）
