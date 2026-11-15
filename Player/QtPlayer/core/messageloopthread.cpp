@@ -1,6 +1,6 @@
 #include "core/messageloopthread.h"
 #include "core/messagequeue.h"
-
+#include "core/log.h"
 MessageLoopThread::MessageLoopThread():m_running(false)  {}
 
 void MessageLoopThread::setMessageHandler(MessageHandler handler)
@@ -11,7 +11,10 @@ void MessageLoopThread::setMessageHandler(MessageHandler handler)
 void MessageLoopThread::start()
 {
     if (m_running.exchange(true)) return;  //只启动一次
-
+    if (!m_queue){
+        logDebug()<<"m_queue is NULL";
+        return;
+    }
     m_queue->start();
     m_thread = std::thread(&MessageLoopThread::loop, this);
 }
@@ -31,6 +34,10 @@ void MessageLoopThread::stop()
 
 void MessageLoopThread::postMessage(PlayerMessage &&msg)
 {
+    if (!m_queue){
+        logDebug()<<"m_queue is NULL";
+        return;
+    }
     if (m_running.load()) {
         m_queue->push(std::move(msg));
     } else {
@@ -43,6 +50,10 @@ void MessageLoopThread::postMessage(PlayerMessage &&msg)
 
 void MessageLoopThread::postMessage(int what, int arg1, int arg2, void *obj, std::function<void (void *)> free_l)
 {
+    if (!m_queue){
+        logDebug()<<"m_queue is NULL";
+        return;
+    }
     PlayerMessage msg;
     msg.what = what;
     msg.arg1 = arg1;
@@ -52,8 +63,20 @@ void MessageLoopThread::postMessage(int what, int arg1, int arg2, void *obj, std
     postMessage(std::move(msg));
 }
 
+void MessageLoopThread::setMessageQueue(MessageQueue *q)
+{
+    if(!q || m_queue){
+        return;
+    }
+    m_queue = q;
+}
+
 void MessageLoopThread::loop()
 {
+    if (!m_queue){
+        logDebug()<<"m_queue is NULL";
+        return;
+    }
     printf("[MessageLoop] Thread started.\n");
 
     while (m_running.load()) {

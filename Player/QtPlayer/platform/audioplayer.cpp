@@ -10,6 +10,10 @@
 
 bool AudioPlayer::open(int sampleRate, int channels){
     close();
+    // 把这次真正打开的格式记进成员：getNoPlayMs() 要用它算 bytesPerSecond，
+    // 否则设备实际跑在别的采样率时，音频时钟（= PTS - 未播毫秒）会按 48k 算错。
+    this->sampleRate = sampleRate;
+    this->channels   = channels;
     //音频格式配置
     QAudioFormat fmt;
     fmt.setSampleRate(sampleRate);

@@ -15,8 +15,13 @@
 #include <QGuiApplication>   // 只在 Wayland 才需要请系统接管窗口缩放
 #include <QWindow>           // startSystemResize / startSystemMove
 #include <QInputDialog>
+#include <QDebug>
 #include "platform/audioplayer.h"
 #include "platform/videowidget.h"
+extern "C" {
+#include <libavutil/frame.h>   // av_frame_clone：投递到 GUI 线程前要先克隆一份
+}
+// CMD_OPEN_OBJ 已移到 core/messagequeue.h —— PlayerCore 处理 CMD_OPEN 时也要按它解析
 
 //快进/快退的“尾部”去抖窗口：停止按键多久后，把累积的目标补上。
 //配合“前沿”（这一串按键的第一次立即生效）实现 B 站式手感：
@@ -35,9 +40,15 @@ Player::Player(QWidget *parent)
     m_widget = new VideoWidget(this);
     m_auPlayer = new AudioPlayer();
 
-    if(!m_playerCore || !m_playerCtx) exit(0);
+    if(!m_playerCore || !m_playerCtx || !m_widget || !m_auPlayer){
+        qDebug()<<"PlayerCore Init failed";
+        exit(0);
+    }
     m_playerCore->setPlayerContext(m_playerCtx);
     setEventCallback();
+    setVideoPainterCb();
+
+
 
     //设置窗口图标&默认窗口标题
     this->setWindowIcon(QIcon(":/workBtnPNG/OPlayer.png"));
@@ -73,7 +84,6 @@ Player::Player(QWidget *parent)
     //开始与暂停按钮控制
     connect(ui->ctrlbar, &CtrlBar::play, this,&Player::play);
     connect(ui->ctrlbar, &CtrlBar::pause, this,&Player::pause);
-    //temp connect(&dt,&DemuxThread::needPause,this,&Player::pause);
     connect(ui->ctrlbar, &CtrlBar::setVolume, this,&Player::setVolume);
     connect(this,&Player::setPausePicture,ui->ctrlbar, &CtrlBar::setPausePictrue);
     //停止播放
@@ -139,10 +149,12 @@ Player::Player(QWidget *parent)
 
 
 
-    //tempconnect(ui->playList,&PlayList::noMoreToPlay,this,[this]{dt.setHasPlayList(false);});
+    connect(ui->playList,&PlayList::noMoreToPlay,this,[this]{m_playerCore->postMessage(ContextChange::CTX_HAS_PLAYLIST,0);});
 
     //支持拖文件进来
     setAcceptDrops(true);
+
+
 }
 
 Player::~Player()
@@ -240,8 +252,9 @@ void Player::on_openLink()
 
 void Player::setVolume(double pos)
 {
-    m_playerCore->postMessage(PlayerCmd::CMD_SET_VOLUME,static_cast<int>(pos*100));
+    // 音量直接作用于 Player 自己持有的 AudioPlayer。
     m_nowVolume = pos;
+    if (m_auPlayer) m_auPlayer->setVolume(pos);
 }
 
 void Player::toggleFullScreen()
@@ -340,12 +353,13 @@ void Player::playFile(const QString &path)
 
     //换文件前先退出逐帧
     exitStepFrame();
-    //if (!dt.openFile(path.toUtf8().constData(), ui->video)) {
-    //    QMessageBox::information(0, "error", "open file failed!");
-    //    return;
-    //}
-    m_playerCore->postMessage(PlayerCmd::CMD_OPEN,0,0,new std::string(path.toUtf8().constData()),[](void* p){
-        delete static_cast<std::string*>(p);
+    CMD_OPEN_OBJ* obj = new CMD_OPEN_OBJ(path.toUtf8().constData(),m_videoCb,m_auPlayer);
+    m_playerCore->postMessage(PlayerCmd::CMD_OPEN
+                              ,0
+                              ,0
+                              ,obj
+                              ,[](void* p){
+        delete static_cast<CMD_OPEN_OBJ*>(p);
     });
 
 
@@ -382,7 +396,7 @@ void Player::playFile(const QString &path)
     m_timerId = startTimer(16);
     update();
     resizeEvent(nullptr);
-    //setPausePicture(dt.getIsPause());
+    setPausePicture(m_playerCtx->getIsPause());
     if(!m_playerCtx->getIsPause()){
         play();
     }else{
@@ -635,6 +649,27 @@ void Player::setEventCallback()
             break;
         }
     });
+}
+
+void Player::setVideoPainterCb()
+{
+    /*
+     * 这个回调由 core 的渲染线程调用，而 setPaint() 必须在 GUI 线程执行，
+     * 所以走 QueuedConnection 投递。投递是异步的 —— 等 lambda 真正执行时，
+     * 渲染线程早已把 frame 还回帧队列复用/释放了，直接捕获裸指针就是 use-after-free。
+     *
+     * 因此先 av_frame_clone() 克隆一份自己持有，连同 lambda 一起投递过去；
+     * VideoWidget::setPaint() 会接管所有权（换指针或丢弃时 av_frame_free）。
+     */
+    m_videoCb = [this](AVFrame* frame) {
+        if (!frame) return;
+        AVFrame* safeFrame = av_frame_clone(frame);
+        if (!safeFrame) return;
+        QMetaObject::invokeMethod(m_widget, [this, safeFrame]() {
+            m_widget->setPaint(safeFrame);
+        }, Qt::QueuedConnection);
+    };
+
 }
 
 

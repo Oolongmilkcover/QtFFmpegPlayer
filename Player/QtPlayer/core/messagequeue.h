@@ -63,6 +63,30 @@ struct PlayerMessage{
     PlayerMessage() : what(0), arg1(0), arg2(0), obj(nullptr) {}
 };
 
+/*
+ * CMD_OPEN 的负载：一次打开动作需要的三样东西。
+ *
+ * 之前它定义在 app/player.cpp 里（只有 UI 侧看得见），
+ * 而 PlayerCore 处理 CMD_OPEN 时又按 std::string* 去解引用 obj —— 类型对不上。
+ * 放到 core 里，收发两端都能看到同一个定义。
+ *
+ * cb 是"视频帧渲染回调"（std::function<void(AVFrame*)>），
+ * out 是音频出口指针，生命周期都由 app 侧（Player）持有，这里只借指针。
+ */
+struct AVFrame;
+class IAudioOutput;
+
+struct CMD_OPEN_OBJ
+{
+    std::string name;                       // 路径 / URL
+    std::function<void(AVFrame*)> cb;       // 视频帧回调
+    IAudioOutput *out = nullptr;            // 音频输出（可为空 → 无声音）
+
+    CMD_OPEN_OBJ() = default;
+    CMD_OPEN_OBJ(std::string n, std::function<void(AVFrame*)> c, IAudioOutput *o)
+        : name(std::move(n)), cb(std::move(c)), out(o) {}
+};
+
 struct MessageNode{
     PlayerMessage msg;
     MessageNode* next = nullptr;

@@ -26,13 +26,15 @@ public:
     using PlayCallBack = std::function<void(AVFrame* frame)>;
     void setAudioPlayCallBack(PlayCallBack cb);
     void setVideoPlayCallBack(PlayCallBack cb);
-
+    void start();
 private:
 
     void setMessageHandler();
 
 
 private:
+    MessageQueue* m_msgQue;
+
     MessageLoopThread* m_loop;
 
     EventCallback m_callBack;

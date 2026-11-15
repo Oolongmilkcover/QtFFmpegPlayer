@@ -13,6 +13,7 @@ class AudioPlayer;
 QT_BEGIN_NAMESPACE
 namespace Ui {
 class Player;
+
 }
 QT_END_NAMESPACE
 
@@ -131,6 +132,11 @@ private:
     void setEventCallback();
 
     VideoWidget* m_widget;
+    void setVideoPainterCb();
+
+    // 视频帧渲染回调（std::function 本体，不是指针；
+    // 传进 CMD_OPEN 时按值拷贝，Player 自己活得比它久）
+    PaintFrame m_videoCb;
     AudioPlayer* m_auPlayer;
 
     bool m_isPause = false;

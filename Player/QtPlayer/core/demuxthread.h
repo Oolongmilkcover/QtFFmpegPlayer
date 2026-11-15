@@ -13,8 +13,12 @@ Seek 功能
 #include "libavutil/rational.h"
 #include <set>
 #include <string>
-#include <QThread>
-// 同上：FFmpeg 类型一律用 struct 前置声明，避免与其它 TU 的修饰名不一致（LNK2019）
+#include <functional>
+#include <mutex>
+#include <atomic>
+#include <thread>
+
+
 struct AVFormatContext;
 struct AVDictionary;
 class VideoDecodeThread;
@@ -27,11 +31,10 @@ struct AVFrame;
 //视频输出回调
 using PaintFrame = std::function<void(AVFrame* frame)>;
 
-class DemuxThread : public QThread
+class DemuxThread
 {
-    Q_OBJECT
 public:
-    explicit DemuxThread(QObject *parent = nullptr);
+    explicit DemuxThread();
     ~DemuxThread();
 
     //设置与PlayerCore共享的上下文 只允许访问  要修改得返回信息到PlayerCore由他修改
@@ -80,7 +83,7 @@ public:
     //进度条用获取pts
     long long getVideoPts();
 
-    void run() override;
+    void run() ;
 
     //pts
     std::atomic<long long >  pts = 0;
@@ -126,15 +129,10 @@ public:
 
     std::atomic<bool> m_seekPauseing = false;
 
-private slots:
+private:
     void setDone();
 
     void videoCallSeek(long long ms);
-signals:
-
-    void disableBtn();
-    void ableBtn();
-    void playNext();
 
 private:
 
@@ -161,7 +159,9 @@ private:
     //是否暂停
     //std::atomic<bool> m_isPause = false;
     //是否退出
-    //std::atomic<bool>  m_isExit = false;
+    //DemuxThread 自己的停止标志：close() 直接置它，不依赖 PlayerCore 把
+    //CTX_IS_EXIT 消息处理完 —— 否则 close() 里 join 自己这条线程会永远等不到。
+    std::atomic<bool> m_isExit{false};
     //解封装上下文
     AVFormatContext* m_fmt_ctx = nullptr;
     //配置
@@ -169,6 +169,12 @@ private:
     //音视频线程
     VideoDecodeThread *m_videoDecodeThread = nullptr;
     AudioThread *m_audioThread = nullptr;
+
+    //demux 线程本体（原来继承 QThread，现在自己持有一条 std::thread）
+    std::thread m_dumuxThread;
+
+    //run() 及内部循环的退出判断：自己收到停止，或 PlayerCore 要求整体退出
+    bool shouldExit() const { return m_isExit.load() || (m_playerctx && m_playerctx->getIsExit()); }
 
     //音视频流
     int m_videoStream = -1;

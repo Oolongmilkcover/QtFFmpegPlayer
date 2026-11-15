@@ -1,6 +1,8 @@
 #include "core/demuxthread.h"
 #include "core/log.h"
 #include <cctype>
+#include <chrono>
+#include <thread>
 #include "core/audiothread.h"
 #include "core/videodecodethread.h"
 #include "core/videorenderthread.h"
@@ -15,6 +17,15 @@ extern "C" {
 //往解码线程的包队列里放包时最多等多久（毫秒）
 //用带超时的等待，保证 demux 线程随时能响应 seek / 退出 / 逐帧回填
 static constexpr int PUSH_TIMEOUT_MS = 10;
+
+// QThread::msleep 的替身。不再继承 QThread 后，msleep 就不存在了，
+// 统一走 std::this_thread，语义一样（睡在当前线程上）。
+namespace {
+inline void sleepMs(int ms)
+{
+    std::this_thread::sleep_for(std::chrono::milliseconds(ms));
+}
+}
 
 /*
  * 网络读写等待上限（微秒）。
@@ -52,8 +63,7 @@ static bool isStreamUrl(const std::string &url)
     return toLowerAscii(url.substr(0, sep)) != "file";
 }
 
-DemuxThread::DemuxThread(QObject *parent)
-    : QThread{parent}
+DemuxThread::DemuxThread()
 {
     //1.网络流初始化
     avformat_network_init();
@@ -69,9 +79,11 @@ DemuxThread::DemuxThread(QObject *parent)
 
 DemuxThread::~DemuxThread()
 {
-    //m_isExit = true;
-    m_msgQue->push(std::move(m_msgQue->getMsg(ContextChange::CTX_IS_EXIT,1)));
-    wait();
+    // 先让 demux 线程停下来并收尸，再释放它引用的解码线程 / 封装上下文，
+    // 否则可能出现"run() 还在用 m_fmt_ctx，析构已经 avformat_close_input"的悬空访问。
+    m_isExit.store(true);
+    if (m_msgQue) m_msgQue->push(std::move(m_msgQue->getMsg(ContextChange::CTX_IS_EXIT,1)));
+    if (m_dumuxThread.joinable()) m_dumuxThread.join();
 
     // 释放音视频线程
     delete m_videoDecodeThread;
@@ -105,7 +117,7 @@ bool DemuxThread::openFile(const char* url,PaintFrame cb , IAudioOutput* out)
         return false;
     }
     close();
-    //m_isExit.store(false);
+    m_isExit.store(false);          // 上一轮 close() 置过停止标志，这里复位再开新的一轮
     m_msgQue->push(std::move(m_msgQue->getMsg(ContextChange::CTX_IS_EXIT,0)));
     m_serial.store(0); //每次加载时serial清零
     m_seekPauseing.store(false); //兜底：清掉上一次可能残留的“seek 进行中”
@@ -289,15 +301,26 @@ bool DemuxThread::openFile(const char* url,PaintFrame cb , IAudioOutput* out)
     if (m_hasAudio) m_audioTimebase = m_fmt_ctx->streams[m_audioStream]->time_base;
     if (m_hasVideo) m_videoTimebase = m_fmt_ctx->streams[m_videoStream]->time_base;
 
+    m_msgQue->push(std::move(m_msgQue->getMsg(ContextChange::CTX_IS_STREAM_MEDIA,streamMedia == true ? 1 : 0)));
+    m_msgQue->push(std::move(m_msgQue->getMsg(ContextChange::CTX_HAS_VIDEO,m_hasVideo == true ? 1 : 0)));
+    m_msgQue->push(std::move(m_msgQue->getMsg(ContextChange::CTX_HAS_AUDIO,m_hasAudio == true ? 1 : 0)));
+
     return tmpRet;
 }
 
 void DemuxThread::start()
 {
-    std::lock_guard<std::mutex> lock(m_mutex);
-    QThread::start();
+    // 重复 openFile 时上一轮的 run() 可能还没被回收；
+    // 给 joinable 的 std::thread 再次赋值会直接 std::terminate，所以先 join。
+    // join 必须在锁外做：run() 自己也会拿 m_mutex，持锁 join 会互等。
+    if (m_dumuxThread.joinable()) m_dumuxThread.join();
+
+    m_isExit.store(false);
+    m_dumuxThread = std::thread([this]{
+        this->run();
+    });
     if (m_hasVideo && m_videoDecodeThread) m_videoDecodeThread->start();
-    if (m_hasAudio && m_audioThread) m_audioThread->startAudio();//启动两个子线程
+    if (m_hasAudio && m_audioThread) m_audioThread->startAudio();
 
 }
 
@@ -319,10 +342,9 @@ void DemuxThread::setPause(bool isPause)
 void DemuxThread::startFrameStep()
 {
     if (!m_hasVideo || !m_videoDecodeThread) return;
-    if (m_isStreamMedia.load()) return;            //流媒体没有可回退的"帧位置"，不支持逐帧
-    //if (m_isFrameStep.exchange(true)) return;      //已经在逐帧了
+    if (m_isStreamMedia.load()) return;            //流媒体没有可回退的"帧位置"，不支持逐帧      
     if(m_playerctx->getIsFrameStep()){
-        return;
+        return;//已经在逐帧了
     }else{
         m_msgQue->push(std::move(m_msgQue->getMsg(ContextChange::CTX_IS_FRAME_STEP,1)));
     }
@@ -330,7 +352,6 @@ void DemuxThread::startFrameStep()
 
     //逐帧期间：demux 与解码线程继续工作，只暂停“渲染”
     m_pauseBeforeStep.store(m_playerctx->getIsPause());
-    //m_isPause.store(false);
     m_msgQue->push(std::move(m_msgQue->getMsg(ContextChange::CTX_IS_PAUSE,0)));
     m_videoDecodeThread->setPause(false);          //解码线程继续解码
     m_videoDecodeThread->setRenderPause(true);     //渲染线程停下来等逐帧命令
@@ -357,7 +378,7 @@ void DemuxThread::endFrameStep()
         m_videoDecodeThread->clearStepRequests();
     }
 
-    if (needSeek && !m_playerctx->getIsExit() && totalMs > 0 && m_hasVideo) {
+    if (needSeek && !shouldExit() && totalMs > 0 && m_hasVideo) {
         //逐帧后屏幕上的帧和 demux 的读位置大概率不一致 → seek 对齐
         //直接用“当前显示帧的毫秒 pts”，不要走 pos<->ms 的浮点换算，
         //否则可能多 1ms 而落到下一帧
@@ -481,7 +502,10 @@ bool DemuxThread::requestSeekMs(long long ms)
 
 void DemuxThread::close()
 {
-    //m_isExit = true;
+    // 先置自己的停止标志：run() 与它内部的循环（doSeek / doBackwardRefill）都看 shouldExit()，
+    // 这样下面 join 时它们能立刻退出来。只发 CTX_IS_EXIT 消息是不够的 ——
+    // 那条消息要等 PlayerCore 的循环处理完才生效，而 close() 往往正是在那个循环里调的。
+    m_isExit.store(true);
     m_msgQue->push(std::move(m_msgQue->getMsg(ContextChange::CTX_IS_EXIT,1)));
     //退出逐帧（这里不做位置对齐，马上要关了）
     //m_isFrameStep.store(false);
@@ -517,7 +541,9 @@ void DemuxThread::close()
      */
     if (m_videoDecodeThread) m_videoDecodeThread->abortQueues();
 
-    wait();          // 1. 等 demux 线程退出（它自己会响应 m_isExit）
+    // 1. 等 demux 线程退出（它看 shouldExit()：m_isExit 已在函数开头置 true，
+    //    abortQueues() 又把卡在帧队列上的等待放掉，所以这里不会长期阻塞）
+    if (m_dumuxThread.joinable()) m_dumuxThread.join();
     closeAVThread(); // 2. 关闭音视频线程（join 渲染/解码/音频线程）
     clear();         // 3. 清空队列：消费者都已 join，安全
     /*
@@ -608,7 +634,7 @@ long long DemuxThread::getVideoPts()
 
 void DemuxThread::run()
 {
-    while(!m_playerctx->getIsExit()){
+    while(!shouldExit()){
         //逐帧回填：历史帧退到头了，需要向后解码一段补进历史
         if(m_hasVideo && m_videoDecodeThread && m_videoDecodeThread->needRefill.load()){
             doBackwardRefill();
@@ -629,7 +655,7 @@ void DemuxThread::run()
         // 暂停或未初始化 → 等待
         if(m_playerctx->getIsPause() || !isCompleteInit)
         {
-            msleep(5);
+            sleepMs(5);
             continue;
 
         }
@@ -690,12 +716,12 @@ void DemuxThread::run()
                             seek(0.0);
                         }
                     }else{
-                        msleep(10);
+                        sleepMs(10);
                         continue;
                     }
                 }
             }
-            msleep(5);
+            sleepMs(5);
             continue;
         }
         // 判断数据是音频
@@ -717,7 +743,7 @@ void DemuxThread::run()
         //队列满没推进去 → 留着下次重试，不能丢包
         if(!pushed) m_pendingPkt = pkt;
         //logDebug()<<"mutexThread->push";
-        msleep(1);
+        sleepMs(1);
     }
 
     if(m_pendingPkt){
@@ -804,7 +830,7 @@ void DemuxThread::doSeek()
     int serial = m_serial.load();
     //具体seek到的ms
     int64_t realMs = -1;
-    while (m_hasVideo && !m_playerctx->getIsExit())
+    while (m_hasVideo && !shouldExit())
     {
         AVPacket *pkt = readPkt(); // 内部自己加锁、快速释放
         if (!pkt) break;
@@ -905,7 +931,7 @@ void DemuxThread::doBackwardRefill()
 
     //3.从 targetMs 解码到 boundaryMs，把中间的帧回填进历史
     auto readVideoPkt = [this]() -> AVPacket* {
-        while(!m_playerctx->getIsExit()){
+        while(!shouldExit()){
             AVPacket* p = readPkt();
             if(!p) return nullptr;
             if(p->stream_index == m_videoStream) return p;
@@ -923,7 +949,7 @@ void DemuxThread::doBackwardRefill()
     //     << QString::number(costNs / 1e6, 'f', 2) << " ms";
 
     //4.回填期间用户退出了逐帧 → 读位置需要重新对齐
-    if(!m_playerctx->getIsFrameStep() && !m_playerctx->getIsExit() && totalMs > 0){
+    if(!m_playerctx->getIsFrameStep() && !shouldExit() && totalMs > 0){
         requestSeekMs(getVideoPts());
     }
 
@@ -945,7 +971,9 @@ void DemuxThread::videoCallSeek(long long ms)
 
 bool DemuxThread::getIsExit() const
 {
-    return m_playerctx->getIsExit();
+    // FFmpeg 的中断回调也走这里：close() 一置 m_isExit，
+    // 阻塞在 av_read_frame 的网络流就能立刻被打断，不会卡住 join。
+    return shouldExit();
 }
 
 void DemuxThread::setHasPlayList(bool has)

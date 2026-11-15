@@ -1,11 +1,15 @@
 #include "core/playercore.h"
+#include "core/log.h"
 #include "core/messageloopthread.h"
 #include "core/messagequeue.h"
 #include "core/playercontext.h"
 
 
 PlayerCore::PlayerCore() {
-    setMessageHandler();    
+    m_msgQue = new MessageQueue();
+    setMessageHandler();
+    m_loop->setMessageQueue(m_msgQue);
+    dt.setMessageQueue(m_msgQue);
 }
 
 
@@ -22,12 +26,12 @@ void PlayerCore::setMessageHandler()
             //UI->Core
             case CMD_OPEN:
                 {
-                    // arg1=0, obj=std::string*(路径/URL)；成功后发 EVT_PREPARED
-                    std::string name = *static_cast<std::string*>(msg.obj);
-                    m_playerctx->setSetPlayingName(name);
-                    if(!dt.openFile(name.c_str(),nullptr,nullptr)){
+                    //obj=CMD_OPEN_OBJ*（路径 + 视频帧回调 + 音频输出），定义见 core/messagequeue.h
+                    auto *op = static_cast<CMD_OPEN_OBJ*>(msg.obj);
+                    m_playerctx->setSetPlayingName(op->name);
+                    if(!dt.openFile(op->name.c_str(), op->cb, op->out)){
                         postMessage(getErrorMsg("dt.openFile failed"));
-                    };//dt.openFile(name.c_str()) 还没改
+                    }
                     dt.start();
                     break;
                 }
@@ -44,7 +48,11 @@ void PlayerCore::setMessageHandler()
             case CMD_SEEK:
                 {
                     //用arg1和arg2拆分int64为高位和低位 arg1=目标毫秒；完成后发 EVT_SEEK_DONE
-                    int64_t posMs = static_cast<int64_t>(msg.arg1<<32|msg.arg2);
+                    //注意：不能在 int 上 << 32（C4293 未定义行为），先转 uint64 再拼，
+                    //高 32 位按无符号解释，拼完再整体转回有符号 int64。
+                    const uint64_t hi = static_cast<uint32_t>(msg.arg1);
+                    const uint64_t lo = static_cast<uint32_t>(msg.arg2);
+                    int64_t posMs = static_cast<int64_t>((hi << 32) | lo);
                     dt.seekToMs(posMs);
                     break;
                 }
@@ -183,6 +191,13 @@ void PlayerCore::postMessage( PlayerMessage&& msg)
 void PlayerCore::postMessage(int what, int arg1, int arg2, void *obj, std::function<void (void *)> free_l)
 {
     m_loop->postMessage(what,arg1,arg2,obj,free_l);
+}
+
+
+
+void PlayerCore::start()
+{
+    m_loop->start();
 }
 
 void PlayerCore::setPlayerContext(PlayerContext *ctx)

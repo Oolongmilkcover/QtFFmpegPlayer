@@ -4,7 +4,7 @@
 #include <mutex>
 #include "core/iaudiooutput.h"
 class QAudioSink;
-class AudioPlayer : public QObject , IAudioOutput
+class AudioPlayer : public QObject , public IAudioOutput
 {
     Q_OBJECT
 public:
@@ -22,6 +22,7 @@ public:
     int write(const unsigned char *data, int datasize) override;
     int getFree()override;
     void setPause(bool isPause)override;
+    // 音量不属于 IAudioOutput 接口（core 不关心音量），由 app 侧直接调这个类
     void setVolume(qreal vol);
     double  getVolume();
     AudioPlayer();

@@ -33,16 +33,16 @@ public:
     // 辅助接口：直接传参组装消息
     void postMessage(int what, int arg1 = 0, int arg2 = 0, void* obj = nullptr,std::function<void(void*)> free_l = nullptr);
 
+    void setMessageQueue(MessageQueue* q);
+
 private:
     //主循环
     void loop();
 
-
-
 private:
     std::thread m_thread;
     std::atomic<bool> m_running{false};    // 运行标志
-    MessageQueue* m_queue ;  // 消息队列
+    MessageQueue* m_queue = nullptr;  // 消息队列
     MessageHandler m_handler = nullptr;    // 业务分发回调
 };
 
