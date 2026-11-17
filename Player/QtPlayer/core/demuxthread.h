@@ -9,7 +9,6 @@ Seek 功能
 */
 #include "core/iaudiooutput.h"
 #include "core/playercontext.h"
-#include "core/perfclock.h"
 #include "libavutil/rational.h"
 #include <set>
 #include <string>
@@ -172,7 +171,7 @@ private:
     VideoDecodeThread *m_videoDecodeThread = nullptr;
     AudioThread *m_audioThread = nullptr;
 
-    //demux 线程本体（原来继承 QThread，现在自己持有一条 std::thread）
+    //demux 线程本体
     std::thread m_dumuxThread;
 
     //run() 及内部循环的退出判断：自己收到停止，或 PlayerCore 要求整体退出
