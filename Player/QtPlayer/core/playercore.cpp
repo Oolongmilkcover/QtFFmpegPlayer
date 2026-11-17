@@ -20,10 +20,12 @@ PlayerCore::PlayerCore() {
 
 PlayerCore::~PlayerCore()
 {
-    // 先停消息循环，再拆队列；dt 是值成员，析构在本体之后，
-    // 所以这里把它的队列指针摘掉，免得它的析构再往已释放的队列里推消息。
+    // 先同步停掉所有线程，再拆队列。
+    stop();
+
+    // dt 是值成员，析构在本体之后；这里把它的队列指针摘掉，
+    // 免得它的析构再往即将释放的队列里推消息。
     if (m_loop) {
-        m_loop->stop();
         delete m_loop;
         m_loop = nullptr;
     }
@@ -217,10 +219,25 @@ void PlayerCore::postMessage(int what, int arg1, int arg2, void *obj, std::funct
 
 void PlayerCore::start()
 {
+    m_stopped = false;
     m_loop->start();
+}
+
+void PlayerCore::stop()
+{
+    // 幂等：析构里还会再调一次
+    if (m_stopped) return;
+    m_stopped = true;
+
+    // 1) 先停消息循环（内部 join）—— 停完就不会再有回调打进 UI 线程
+    if (m_loop) m_loop->stop();
+
+    // 2) 再关 demux 及其下面的解码/渲染/音频线程（join）
+    dt.close();
 }
 
 void PlayerCore::setPlayerContext(PlayerContext *ctx)
 {
     m_playerctx = ctx;
+    dt.setPlayerContext(ctx);
 }

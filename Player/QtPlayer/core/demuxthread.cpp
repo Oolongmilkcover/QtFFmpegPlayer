@@ -513,7 +513,9 @@ void DemuxThread::close()
     m_msgQue->push(std::move(m_msgQue->getMsg(ContextChange::CTX_IS_FRAME_STEP,0)));
     //m_isSeeking.store(false);
     m_msgQue->push(std::move(m_msgQue->getMsg(ContextChange::CTX_IS_SEEKING,0)));
-    setPause(true);  // 先暂停
+    // setPause() 会读 m_playerctx；没接上下文时（比如刚构造就析构）直接跳过，
+    // 否则退出路径上是空指针解引用。
+    if (m_playerctx) setPause(true);  // 先暂停
     /*
      * 顺序很重要：必须先等 demux 线程退出，再拆 AV 线程。
      *

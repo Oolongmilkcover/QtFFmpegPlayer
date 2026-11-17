@@ -32,8 +32,15 @@ bool AudioPlayer::open(int sampleRate, int channels){
     }
     std::lock_guard<std::mutex> lock(m_mutex);
     // ========== Qt6创建 QAudioSink ==========
-    //音频播放核心对象
-    m_sink = new QAudioSink(device, fmt, this);
+    /*
+     * 这里刻意不传 parent。
+     *
+     * AudioPlayer 对象是在 GUI 线程 new 出来的，而 open() 由 core 的消息循环线程
+     * 经 DemuxThread → AudioThread 调进来；给一个"属于别的线程"的 QObject 当 parent
+     * 会触发 Qt 的跨线程父子关系告警（Debug 下可能直接 abort）。
+     * sink 的生命周期全部由 close() 里的 delete 管理，本来也不需要 parent。
+     */
+    m_sink = new QAudioSink(device, fmt);
     m_sink->setVolume(m_savedVolume);
     //m_sink->setBufferSize(131072*10);
     // 启动音频

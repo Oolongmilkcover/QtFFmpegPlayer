@@ -37,7 +37,7 @@ Player::Player(QWidget *parent)
     //PlayerCore Init
     m_playerCtx = new PlayerContext();
     m_playerCore = new PlayerCore();
-    m_widget = new VideoWidget(this);
+    m_widget = ui->video;
     m_auPlayer = new AudioPlayer();
 
     if(!m_playerCore || !m_playerCtx || !m_widget || !m_auPlayer){
@@ -143,9 +143,9 @@ Player::Player(QWidget *parent)
 
     //播这个
     connect(ui->playList->getListWidget(), &QListWidget::itemDoubleClicked,
-            this, &Player::on_playList_doubleClicked);
+            this, &Player::onPlayList_doubleClicked);
     connect(ui->playList, &PlayList::playThis,
-            this, &Player::on_playList_doubleClicked);
+            this, &Player::onPlayList_doubleClicked);
 
 
 
@@ -159,10 +159,31 @@ Player::Player(QWidget *parent)
 
 Player::~Player()
 {
-    if (!m_isClosing) m_playerCore->postMessage(PlayerCmd::CMD_STOP);//dt.close();
-    if (m_timerId) killTimer(m_timerId);
-    if (m_seekDebounceTimerId) killTimer(m_seekDebounceTimerId);
+    if (m_timerId) { killTimer(m_timerId); m_timerId = 0; }
+    if (m_seekDebounceTimerId) { killTimer(m_seekDebounceTimerId); m_seekDebounceTimerId = 0; }
+
+    /*
+     * 顺序很重要：必须先"同步"停掉 core，再拆 UI。
+     *
+     * 以前这里只 postMessage(CMD_STOP) 就 delete ui —— 那是异步的，
+     * core 的消息循环 / 渲染线程随时可能回调进来，而 Player 和 ui 已经没了，
+     * 表现为退出时随机 0xC0000005。
+     *
+     * stop() 内部会 join 消息循环和 demux/解码/渲染/音频线程，返回之后
+     * 不会再有任何为 EVT_* 或视频帧回调进入 GUI 线程。
+     */
+    if (m_playerCore) {
+        m_playerCore->stop();
+        delete m_playerCore;
+        m_playerCore = nullptr;
+    }
+    delete m_auPlayer;   // ~AudioPlayer 里会 close() 设备
+    m_auPlayer = nullptr;
+    delete m_playerCtx;
+    m_playerCtx = nullptr;
+
     delete ui;
+    ui = nullptr;
 }
 
 void Player::resizeEvent(QResizeEvent *e)
@@ -410,26 +431,31 @@ void Player::playFile(const QString &path)
 void Player::playNext()
 {
     //流媒体不支持上下集（播完也不会自动切，见 DemuxThread::run 的 EOF 分支）
-    //tempif(dt.isStreamMedia()) return;
-    QListWidget *list = ui->playList->getListWidget();
-    if (list->count() == 0) return;
-    ui->playList->next();                              // 环形选中下一行
-    QString path = ui->playList->itemPath(ui->playList->currentRow());
-    if (!path.isEmpty()) playFile(path);
+    if(m_playerCtx->getIsStreamMedia()) return;
+    QMetaObject::invokeMethod(this,[this](){
+        QListWidget *list = ui->playList->getListWidget();
+        if (list->count() == 0) return;
+        ui->playList->next();                              // 环形选中下一行
+        QString path = ui->playList->itemPath(ui->playList->currentRow());
+        if (!path.isEmpty()) playFile(path);
+    },Qt::QueuedConnection);
 }
 
 void Player::playPrev()
 {
     //流媒体不支持上下集
-    //tempif(dt.isStreamMedia()) return;
-    QListWidget *list = ui->playList->getListWidget();
-    if (list->count() == 0) return;
-    ui->playList->prev();                              // 环形选中上一行
-    QString path = ui->playList->itemPath(ui->playList->currentRow());
-    if (!path.isEmpty()) playFile(path);
+    if(m_playerCtx->getIsStreamMedia()) return;
+    QMetaObject::invokeMethod(this,[this](){
+        QListWidget *list = ui->playList->getListWidget();
+        if (list->count() == 0) return;
+        ui->playList->prev();                              // 环形选中上一行
+        QString path = ui->playList->itemPath(ui->playList->currentRow());
+        if (!path.isEmpty()) playFile(path);
+    },Qt::QueuedConnection);
+
 }
 
-void Player::on_playList_doubleClicked(QListWidgetItem *item)
+void Player::onPlayList_doubleClicked(QListWidgetItem *item)
 {
     if (!item) return;
     ui->playList->setCurrentRow(ui->playList->getListWidget()->row(item));
@@ -455,7 +481,9 @@ void Player::rewindSeekFiveSec()
 void Player::queueSeekBy(long long deltaMs)
 {
     //流媒体不支持快进/快退（DemuxThread::requestSeekMs 里还有一道闸门兜底）
-    //tempif(!m_isInit || dt.isStreamMedia() || dt.m_seekPauseing.load()) return;
+    //if(!m_isInit || dt.isStreamMedia() || dt.m_seekPauseing.load()) return;
+    if(!m_isInit || m_playerCtx->getIsStreamMedia() || m_playerCtx->getIsSeeking()) return;
+
     //逐帧中快进/快退：先退出逐帧（位置会对齐）
     exitStepFrame();
 
@@ -544,7 +572,7 @@ void Player::adjustVolume(double delta)
 void Player::changeSpeed(double delta)
 {
     //流媒体不支持倍速（DemuxThread::setSpeed 里还有一道闸门兜底）
-    //tempif(dt.isStreamMedia()) return;
+    if(m_playerCtx->getIsStreamMedia()) return;
     double newSpeed = m_speed + delta;
     if (newSpeed < 0.5) newSpeed = 0.5;
     if (newSpeed > 2.0)  newSpeed = 2.0;
@@ -554,29 +582,31 @@ void Player::changeSpeed(double delta)
     ui->ctrlbar->setSpeedLabel(m_speed);
 }
 
-void Player::on_EVT_PREPARED(PlayerMessage& msg)
+void Player::onEVT_PREPARED(PlayerMessage& msg)
 {
     long long durationMs = msg.arg1;
     int width = (msg.arg2>>16) & 0xFFFF;
     int height = msg.arg2 & 0xFFFF;
     QMetaObject::invokeMethod(this,[this,width,height,durationMs](){
         this->m_videoSrcW = width;
-        this->m_videoSrcH = height;
+        this->m_videoSrcH = height;          // 注意别写成 m_videoSrcW（height 为 0 时 Init 会把控件置成 0 高，setPaint 会丢掉所有帧）
         this->m_durationMs = durationMs;
         ui->ctrlbar->setSliderMaximum(durationMs);
         ui->ctrlbar->setSliderValue(0);
+        m_widget->Init(m_videoSrcW,m_videoSrcH);
     },Qt::QueuedConnection);
 }
 
-void Player::on_EVT_POSITION(PlayerMessage &msg)
+void Player::onEVT_POSITION(PlayerMessage &msg)
 {
     int ms = msg.arg1;
+    m_pts = msg.arg1;
     QMetaObject::invokeMethod(this,[this,ms](){
         ui->ctrlbar->setSliderValue(ms);
     },Qt::QueuedConnection);
 }
 
-void Player::on_DISABLEBTN()
+void Player::onDISABLEBTN()
 {
     QMetaObject::invokeMethod(this,[this](){
         bool isPause = m_playerCtx->getIsPause();
@@ -587,7 +617,7 @@ void Player::on_DISABLEBTN()
 
 }
 
-void Player::on_ABLEBTN()
+void Player::onABLEBTN()
 {   
     QMetaObject::invokeMethod(this,[this](){
         bool isPause = m_playerCtx->getIsPause();
@@ -597,7 +627,7 @@ void Player::on_ABLEBTN()
     },Qt::QueuedConnection);
 }
 
-void Player::on_EVT_ERROR(PlayerMessage &msg)
+void Player::onEVT_ERROR(PlayerMessage &msg)
 {
     QString wrong = "未知错误";
     if (msg.obj != nullptr) {
@@ -616,27 +646,31 @@ void Player::setEventCallback()
         switch(what){
         case EVT_PREPARED:{
             // arg1=时长ms, arg2=(宽<<16)|高
-            on_EVT_PREPARED(msg);
+            onEVT_PREPARED(msg);
             break;
         }
         case EVT_POSITION:
             // arg1=当前播放位置ms（100~200ms 一次，别每帧发）
-            on_EVT_POSITION(msg);
+            onEVT_POSITION(msg);
             break;
         case EVT_STATE_CHANGED:
             // arg1=新状态（IDLE/INITIALIZED/PREPARING/PREPARED/STARTED/PAUSED/COMPLETED/STOPPED/ERROR）
             break;
         case EVT_DISABLEBTN:
             //关闭按钮
-            on_DISABLEBTN();
+            onDISABLEBTN();
             break;
         case EVT_ABLEBTN:
             //开启按钮
-            on_ABLEBTN();
+            onABLEBTN();
             break;
         case EVT_PLAYNEXT:
             //当前视频播放完毕请求播放下一个
-            playNext();
+            //这个回调跑在 core 的消息循环线程里，playNext() 会操作控件并 startTimer，
+            //必须投递回 GUI 线程执行
+            QMetaObject::invokeMethod(this,[this](){
+                playNext();
+            },Qt::QueuedConnection);
             break;
         case EVT_SEEK_DONE:
             // arg1=实际落点ms（seek 可能不精确，要对齐关键帧）
@@ -652,7 +686,7 @@ void Player::setEventCallback()
             break;
         case EVT_ERROR:
             // arg1=错误码, obj=std::string*(错误文本)
-            on_EVT_ERROR(msg);
+            onEVT_ERROR(msg);
             break;
         }
     });
@@ -670,10 +704,8 @@ void Player::setVideoPainterCb()
      */
     m_videoCb = [this](AVFrame* frame) {
         if (!frame) return;
-        AVFrame* safeFrame = av_frame_clone(frame);
-        if (!safeFrame) return;
-        QMetaObject::invokeMethod(m_widget, [this, safeFrame]() {
-            m_widget->setPaint(safeFrame);
+        QMetaObject::invokeMethod(m_widget, [this,frame]() {
+            m_widget->setPaint(frame);
         }, Qt::QueuedConnection);
     };
 

@@ -27,13 +27,18 @@ public:
     using PlayCallBack = std::function<void(AVFrame* frame)>;
     void setAudioPlayCallBack(PlayCallBack cb);
     void setVideoPlayCallBack(PlayCallBack cb);
+
+    //启动 / 同步停止（stop 会 join 消息循环和所有解码线程，返回后不会再有任何回调）
     void start();
+    void stop();
+
 private:
 
     void setMessageHandler();
 
 
 private:
+    bool m_stopped = false;
     // 指针一律给默认值：这几个成员在构造函数里用，写漏一个就是野指针
     MessageQueue* m_msgQue = nullptr;
 

@@ -28,7 +28,7 @@ void MessageLoopThread::start()
 
 void MessageLoopThread::stop()
 {
-    // 标志位设为 false
+    // 标志位设为 false；已经是 false 说明没在跑（或已经被停过），直接返回
     if (!m_running.exchange(false)) return;
     // 唤醒可能正在阻塞等待的队列
     m_queue->abort();

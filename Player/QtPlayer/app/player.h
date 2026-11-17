@@ -97,7 +97,7 @@ private slots:
 
     void playPrev();
 
-    void on_playList_doubleClicked(QListWidgetItem *item);
+    void onPlayList_doubleClicked(QListWidgetItem *item);
 
     void ffSeekFiveSec();
 
@@ -113,15 +113,15 @@ private slots:
     void changeSpeed(double delta);
 
     //读消息时调用的私有函数
-    void on_EVT_PREPARED(PlayerMessage& msg);
+    void onEVT_PREPARED(PlayerMessage& msg);
 
-    void on_EVT_POSITION(PlayerMessage& msg);
+    void onEVT_POSITION(PlayerMessage& msg);
 
-    void on_DISABLEBTN();
+    void onDISABLEBTN();
 
-    void on_ABLEBTN();
+    void onABLEBTN();
 
-    void on_EVT_ERROR(PlayerMessage& msg);
+    void onEVT_ERROR(PlayerMessage& msg);
 private:
     Ui::Player *ui;
 
