@@ -47,7 +47,7 @@ Player::Player(QWidget *parent)
     m_playerCore->setPlayerContext(m_playerCtx);
     setEventCallback();
     setVideoPainterCb();
-
+    m_playerCore->start();
 
 
     //设置窗口图标&默认窗口标题
@@ -578,18 +578,23 @@ void Player::on_EVT_POSITION(PlayerMessage &msg)
 
 void Player::on_DISABLEBTN()
 {
-    bool isPause = m_playerCtx->getIsPause();
-    setPausePicture(isPause);
-    ui->ctrlbar->setDisabled(true);
-    ui->topMenu->setDisabled(true);
+    QMetaObject::invokeMethod(this,[this](){
+        bool isPause = m_playerCtx->getIsPause();
+        setPausePicture(isPause);
+        ui->ctrlbar->setDisabled(true);
+        ui->topMenu->setDisabled(true);
+    },Qt::QueuedConnection);
+
 }
 
 void Player::on_ABLEBTN()
-{
-    bool isPause = m_playerCtx->getIsPause();
-    setPausePicture(isPause);
-    ui->ctrlbar->setDisabled(false);
-    ui->topMenu->setDisabled(false);
+{   
+    QMetaObject::invokeMethod(this,[this](){
+        bool isPause = m_playerCtx->getIsPause();
+        setPausePicture(isPause);
+        ui->ctrlbar->setDisabled(false);
+        ui->topMenu->setDisabled(false);
+    },Qt::QueuedConnection);
 }
 
 void Player::on_EVT_ERROR(PlayerMessage &msg)
@@ -599,7 +604,9 @@ void Player::on_EVT_ERROR(PlayerMessage &msg)
         std::string* errStr = static_cast<std::string*>(msg.obj);
         wrong = QString::fromStdString(*errStr);
     }
-    QMessageBox::warning(this, "错误", wrong);
+    QMetaObject::invokeMethod(this,[this,wrong](){
+        QMessageBox::warning(this, "错误", wrong);
+    },Qt::QueuedConnection);
 }
 
 void Player::setEventCallback()

@@ -3,6 +3,13 @@
 #include "core/log.h"
 MessageLoopThread::MessageLoopThread():m_running(false)  {}
 
+MessageLoopThread::~MessageLoopThread()
+{
+    // 声明了很久但没有定义过；PlayerCore 会 delete 它，所以必须在这里收尾。
+    // stop() 内部有 join，线程还没停就会等它退出。
+    if (m_running.load() && m_queue) stop();
+}
+
 void MessageLoopThread::setMessageHandler(MessageHandler handler)
 {
     m_handler = std::move(handler);

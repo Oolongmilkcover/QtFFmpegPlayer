@@ -10,6 +10,7 @@ class PlayerCore
 {
 public:
     PlayerCore();
+    ~PlayerCore();
     using EventCallback = std::function<void(PlayerMessage& msg)>;
 
     //Core到UI的事件回调
@@ -33,13 +34,14 @@ private:
 
 
 private:
-    MessageQueue* m_msgQue;
+    // 指针一律给默认值：这几个成员在构造函数里用，写漏一个就是野指针
+    MessageQueue* m_msgQue = nullptr;
 
-    MessageLoopThread* m_loop;
+    MessageLoopThread* m_loop = nullptr;
 
     EventCallback m_callBack;
 
-    PlayerContext* m_playerctx;
+    PlayerContext* m_playerctx = nullptr;
 
     DemuxThread dt;
 

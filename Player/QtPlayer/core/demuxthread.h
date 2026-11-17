@@ -134,6 +134,8 @@ private:
 
     void videoCallSeek(long long ms);
 
+    void checkTimeToPostPosition();
+
 private:
 
     //共同上下文

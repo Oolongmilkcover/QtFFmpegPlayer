@@ -6,10 +6,30 @@
 
 
 PlayerCore::PlayerCore() {
+    // 顺序要紧：先建队列 → 再建消息循环 → 把队列交给循环和 demux → 最后注册回调
+    // （setMessageHandler() 内部会调 m_loop->setMessageHandler，m_loop 必须先存在）
     m_msgQue = new MessageQueue();
-    setMessageHandler();
+
+    m_loop = new MessageLoopThread();
     m_loop->setMessageQueue(m_msgQue);
+
     dt.setMessageQueue(m_msgQue);
+
+    setMessageHandler();
+}
+
+PlayerCore::~PlayerCore()
+{
+    // 先停消息循环，再拆队列；dt 是值成员，析构在本体之后，
+    // 所以这里把它的队列指针摘掉，免得它的析构再往已释放的队列里推消息。
+    if (m_loop) {
+        m_loop->stop();
+        delete m_loop;
+        m_loop = nullptr;
+    }
+    dt.setMessageQueue(nullptr);
+    delete m_msgQue;
+    m_msgQue = nullptr;
 }
 
 

@@ -5,9 +5,7 @@
 #include <thread>
 #include "core/audiothread.h"
 #include "core/videodecodethread.h"
-#include "core/videorenderthread.h"
 #include "core/messagequeue.h"
-#include "platform/videowidget.h"
 
 
 extern "C" {
@@ -304,6 +302,9 @@ bool DemuxThread::openFile(const char* url,PaintFrame cb , IAudioOutput* out)
     m_msgQue->push(std::move(m_msgQue->getMsg(ContextChange::CTX_IS_STREAM_MEDIA,streamMedia == true ? 1 : 0)));
     m_msgQue->push(std::move(m_msgQue->getMsg(ContextChange::CTX_HAS_VIDEO,m_hasVideo == true ? 1 : 0)));
     m_msgQue->push(std::move(m_msgQue->getMsg(ContextChange::CTX_HAS_AUDIO,m_hasAudio == true ? 1 : 0)));
+
+    int w16h = m_width<<16 | m_height;
+    m_msgQue->push(std::move(m_msgQue->getMsg(PlayerEvent::EVT_PREPARED,totalMs,w16h)));
 
     return tmpRet;
 }
@@ -635,6 +636,7 @@ long long DemuxThread::getVideoPts()
 void DemuxThread::run()
 {
     while(!shouldExit()){
+        checkTimeToPostPosition();
         //逐帧回填：历史帧退到头了，需要向后解码一段补进历史
         if(m_hasVideo && m_videoDecodeThread && m_videoDecodeThread->needRefill.load()){
             doBackwardRefill();
@@ -967,6 +969,20 @@ void DemuxThread::setDone()
 void DemuxThread::videoCallSeek(long long ms)
 {
     seekToMs(ms);
+}
+
+void DemuxThread::checkTimeToPostPosition()
+{
+    using namespace std::chrono;
+    static steady_clock::time_point lastTime = steady_clock::now();
+
+    auto now = steady_clock::now();
+    auto diff = duration_cast<milliseconds>(now - lastTime).count();
+
+    if (diff >= 150) {
+        m_msgQue->push(std::move(m_msgQue->getMsg(PlayerEvent::EVT_POSITION,pts)));
+        lastTime = now;
+    }
 }
 
 bool DemuxThread::getIsExit() const
