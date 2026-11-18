@@ -701,8 +701,14 @@ void Player::onEVT_POSITION(PlayerMessage &msg)
 void Player::onDISABLEBTN()
 {
     QMetaObject::invokeMethod(this,[this](){
-        bool isPause = m_playerCtx->getIsPause();
-        setPausePicture(isPause);
+        /*
+         * 只禁用按钮，**不要碰暂停图标**。
+         * 这里读到的 m_playerCtx->getIsPause() 是异步广播，而 seek 期间核心会把
+         * CTX_IS_PAUSE 临时置 1（为了先停生产）—— 拿它刷新图标就会把“正在播放”
+         * 错判成“已暂停”：CtrlBar 的 m_isPause 被改成 true，而 Player::m_isPause 没变。
+         * 两个源分叉后，第一次按空格/点播放会走反方向，表现为“要点两次才开始播”。
+         * 暂停图标只由 play()/pause()/逐帧/打开文件改，它们都是用户动作，不会失真。
+         */
         ui->ctrlbar->setDisabled(true);
         ui->topMenu->setDisabled(true);
     },Qt::QueuedConnection);
@@ -712,8 +718,7 @@ void Player::onDISABLEBTN()
 void Player::onABLEBTN()
 {   
     QMetaObject::invokeMethod(this,[this](){
-        bool isPause = m_playerCtx->getIsPause();
-        setPausePicture(isPause);
+        //同上：只恢复按钮，不碰暂停图标
         ui->ctrlbar->setDisabled(false);
         ui->topMenu->setDisabled(false);
     },Qt::QueuedConnection);
@@ -1169,6 +1174,8 @@ void Player::addToPlayList(const QString &path)
 void Player::play()
 {
     if(!m_isInit) return;
+    if (seekDebugOn()) qDebug() << "[pause] play() called, ui.isPause =" << m_isPause
+                                << " ctx.isPause =" << m_playerCtx->getIsPause();
     //如果在逐帧，先退出逐帧（位置会对齐）
     exitStepFrame();
     ui->ctrlbar->stepFrameTime(false);
@@ -1183,6 +1190,8 @@ void Player::play()
 void Player::pause()
 {
     if(!m_isInit) return;
+    if (seekDebugOn()) qDebug() << "[pause] pause() called, ui.isPause =" << m_isPause
+                                << " ctx.isPause =" << m_playerCtx->getIsPause();
     //如果在逐帧，先退出逐帧（位置会对齐）
     exitStepFrame();
     ui->ctrlbar->setPausePictrue(true);

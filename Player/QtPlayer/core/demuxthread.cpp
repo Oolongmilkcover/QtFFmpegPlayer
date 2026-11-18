@@ -2,6 +2,7 @@
 #include "core/log.h"
 #include <cctype>
 #include <chrono>
+#include <cstdlib>   // std::getenv：seek 诊断开关
 #include <thread>
 #include "core/audiothread.h"
 #include "core/videodecodethread.h"
@@ -22,6 +23,13 @@ namespace {
 inline void sleepMs(int ms)
 {
     std::this_thread::sleep_for(std::chrono::milliseconds(ms));
+}
+
+//与 Player 侧同一个诊断开关：设置 QTPLAYER_SEEK_DEBUG=1 时打印 seek 的关键状态。
+inline bool seekDebugOn()
+{
+    static const bool on = std::getenv("QTPLAYER_SEEK_DEBUG") != nullptr;
+    return on;
 }
 }
 
@@ -337,8 +345,7 @@ void DemuxThread::setPause(bool isPause)
     //正好有 seek 在处理时先别恢复渲染/解码，免得闪过期帧（doSeek 结束会按这个状态恢复）
     bool hold = m_playerctx->getIsSeeking();
 
-    m_pauseAfterSeek.store(isPause);
-    //m_isPause.store(isPause);
+    m_isPause.store(isPause);
     m_msgQue->push(std::move(m_msgQue->getMsg(ContextChange::CTX_IS_PAUSE,isPause?1:0)));
     if (m_videoDecodeThread) m_videoDecodeThread->setPause(isPause || hold);
     if (m_hasAudio && m_audioThread) m_audioThread->setPause(isPause || hold);
@@ -459,53 +466,17 @@ bool DemuxThread::requestSeekMs(long long ms)
     //m_seekMs.store(ms);
     m_msgQue->push(std::move(m_msgQue->getMsg(ContextChange::CTX_SEEKMS,ms)));
     m_serial.fetch_add(1);
-    // //纯音频（MP3等）：底层直接 seek
-    // if (m_disableSeekFlag) {
-    //     bool wasPause = m_playerctx->getIsPause();
-    //     m_seekPauseing.store(true);
-    //     setPause(true); // 先暂停
-    //     {
-    //         std::lock_guard<std::mutex> lock(m_mutex);
-    //         if (m_fmt_ctx && m_hasAudio) {
-    //             // 清空音频队列
-    //             m_audioThread->clear();
-    //             // 注意：clear() 会把音频时钟(m_audioPts)一起清零，而进度条读的就是这个时钟，
-    //             // 于是 seek 后会闪一下“回到开头”，连环快进也会因为读到 0 而永远算成 0+5000。
-    //             // 这里只是把时钟锚到本次 seek 目标；等新音频解码出来，sendPts 会自然接管。
-    //             m_audioThread->sendPts(ms);
-    //             pts.store(ms);
-    //             avformat_flush(m_fmt_ctx);
-    //             int64_t ts = av_rescale_q(ms, {1, 1000}, m_audioTimebase);
-    //             av_seek_frame(m_fmt_ctx, m_audioStream, ts, AVSEEK_FLAG_BACKWARD);
-    //             // 解码器 flush，丢弃 seek 前的残留
-    //             m_audioThread->flushBuf();
-    //             // 重置重采样器 + atempo 滤镜（丢弃残留）
-    //             m_audioThread->requestFilterReset();
-    //             // 同步 serial
-    //             m_audioThread->setSerial(m_serial.load());
-    //         }
-    //     }
-    //     // 无论上面的 if 是否进去过，都必须清掉“seek 进行中”：
-    //     // 否则 m_fmt_ctx 为空 / 没有音频流时它会永久停在 true，
-    //     // player.cpp 的 queueSeekBy 开头会直接 return，快进/快退彻底失效。
-    //     m_seekPauseing.store(false);
-    //     setPause(wasPause);
-    //     m_msgQue->push(std::move(m_msgQue->getMsg(PlayerEvent::EVT_SEEK_DONE,ms)));
-    //     return true;
-    // }
 
     //其余情况
-    //注意：这里不改暂停状态，doSeek() 会按 m_pauseAfterSeek 保存/恢复，
-    //否则用户在暂停时拖动进度条会被“恢复播放”。
+    //注意：这里不改暂停状态 —— doSeek() 会在结束前读 m_isPause（用户意图）决定恢复成
+    //播放还是暂停，所以“暂停时拖进度条”不会被恢复播放。
     //
-    //但采样必须跳过“seek 正在执行中”的窗口：doSeek 为了独占生产者会把 m_isPause
-    //临时置 true 再恢复。长按方向键时下一次请求正好落进那个窗口，照抄就会把这份
-    //临时状态当成用户意图存进 m_pauseAfterSeek，seek 结束后播放器卡在暂停
-    //（现象：长按快进/快退后要按两次播放键；纯音频走上面的直连分支所以没有）。
-    if (!m_playerctx->getIsSeeking()) {
-        m_pauseAfterSeek.store(m_playerctx->getIsPause());
-    }
-    //emit disableBtn();
+    //以前这里会把 m_playerctx->getIsPause() 采样进 m_pauseAfterSeek、再由 doSeek 按开头
+    //的快照恢复，两个毛病：
+    //  1) ctx 是异步广播，seek 期间还会被临时置 true（核心要先停生产），采样到的往往
+    //     不是用户意图 —— 于是 seek 结束后播放器卡在暂停，长按快进/快退后要按两次播放键；
+    //  2) doSeek 用“开头快照”恢复，会丢掉 seek 期间用户按下的播放/暂停。
+    //现在改成：doSeek 结尾直接读 m_isPause（同步、只由 setPause 写），上述两个问题都没了。
     m_msgQue->push(std::move(m_msgQue->getMsg(PlayerEvent::EVT_DISABLEBTN)));
     //m_isSeeking = true;
     m_msgQue->push(std::move(m_msgQue->getMsg(ContextChange::CTX_IS_SEEKING,1)));
@@ -523,9 +494,7 @@ void DemuxThread::close()
     //退出逐帧（这里不做位置对齐，马上要关了）
     m_isFrameStep.store(false);
     m_msgQue->push(std::move(m_msgQue->getMsg(ContextChange::CTX_IS_FRAME_STEP,0)));
-    //m_isSeeking.store(false);
     m_msgQue->push(std::move(m_msgQue->getMsg(ContextChange::CTX_IS_SEEKING,0)));
-    // setPause() 会读 m_playerctx；没接上下文时（比如刚构造就析构）直接跳过，
     // 否则退出路径上是空指针解引用。
     if (m_playerctx) setPause(true);  // 先暂停
     /*
@@ -640,7 +609,7 @@ AVPacket *DemuxThread::readPkt()
 
 bool DemuxThread::getIsPause()
 {
-    return m_playerctx->getIsPause();
+    return m_isPause.load();
 }
 
 long long DemuxThread::getVideoPts()
@@ -782,7 +751,7 @@ void DemuxThread::doSeek()
 
     //纯音频（MP3等）：底层直接 seek
     if (m_disableSeekFlag) {
-        bool wasPause = m_playerctx->getIsPause();
+        bool wasPause = m_isPause.load();
         m_seekPauseing.store(true);
         setPause(true); // 先暂停
         {
@@ -827,10 +796,9 @@ void DemuxThread::doSeek()
 
 
 
-    // 1先保存暂停状态（以“seek 结束后该恢复成什么状态”为准）
-    bool wasPause = m_pauseAfterSeek.load();
-    //seek期间先停生产
-    //m_isPause.store(true);
+    // 1.seek 期间先停生产：只推 CTX_IS_PAUSE=1（run() 看的是 ctx），
+    //**不要动 m_isPause** —— 它是“用户意图”，被临时改成 true 会让结尾的恢复
+    //以及后续采样全部失真（这也是“快进后要按两次播放”的根因之一）。
     m_msgQue->push(std::move(m_msgQue->getMsg(ContextChange::CTX_IS_PAUSE,1)));
     m_seekPauseing.store(true);
 
@@ -865,10 +833,11 @@ void DemuxThread::doSeek()
     {
         std::lock_guard<std::mutex> lock(m_mutex);
         if (!isCompleteInit || !m_fmt_ctx || (!m_hasVideo && !m_hasAudio)) {
-            //m_isPause.store(wasPause);
-            m_msgQue->push(std::move(m_msgQue->getMsg(ContextChange::CTX_IS_PAUSE,wasPause)));
-            if (m_videoDecodeThread) m_videoDecodeThread->setPause(wasPause);
-            if (m_hasAudio && m_audioThread) m_audioThread->setPause(wasPause);
+            //以“现在”的用户意图为准（期间用户可能按过播放/暂停）
+            const bool restorePause = m_isPause.load();
+            m_msgQue->push(std::move(m_msgQue->getMsg(ContextChange::CTX_IS_PAUSE,restorePause)));
+            if (m_videoDecodeThread) m_videoDecodeThread->setPause(restorePause);
+            if (m_hasAudio && m_audioThread) m_audioThread->setPause(restorePause);
             //m_isSeeking.store(false);    // seek 结束，清“进行中”标志
             m_msgQue->push(std::move(m_msgQue->getMsg(ContextChange::CTX_IS_SEEKING,0)));
             m_seekPauseing.store(false); // 早退也必须清，否则快进/快退会永久失效
@@ -927,18 +896,15 @@ void DemuxThread::doSeek()
         m_audioThread->requestFilterReset();
     }
 
-    // 恢复暂停状态
-    //m_isPause.store(wasPause);
-    m_msgQue->push(std::move(m_msgQue->getMsg(ContextChange::CTX_IS_PAUSE,wasPause)));
-    if (m_videoDecodeThread) m_videoDecodeThread->setPause(wasPause);
-    if (m_hasAudio && m_audioThread) m_audioThread->setPause(wasPause);
+    // 恢复暂停状态：以“现在”的用户意图为准。
+    // 用开头快照的话，seek 期间用户按下的播放/暂停会被丢掉（表现为快进后按一次播放没反应）。
+    const bool restorePause = m_isPause.load();
+    if (seekDebugOn()) logDebug() << "[seek] restore pause =" << restorePause;
+    m_msgQue->push(std::move(m_msgQue->getMsg(ContextChange::CTX_IS_PAUSE,restorePause)));
+    if (m_videoDecodeThread) m_videoDecodeThread->setPause(restorePause);
+    if (m_hasAudio && m_audioThread) m_audioThread->setPause(restorePause);
     // seek 结束，清“进行中”标志：此后新的 seek 请求才能重新采样用户的暂停意图
-    //m_isSeeking.store(false);
     m_msgQue->push(std::move(m_msgQue->getMsg(ContextChange::CTX_IS_SEEKING,0)));
-
-    //seek导致的关闭按钮统一给SEEKDONE打开
-    //emit ableBtn();
-    //m_msgQue->push(std::move(m_msgQue->getMsg(PlayerEvent::EVT_ABLEBTN)));
 
     //音频没有关键帧的概念 直接发送消息给ui改变进度条即可，视频得进一步找到具体ms
     int64_t realSeekMs = 0;

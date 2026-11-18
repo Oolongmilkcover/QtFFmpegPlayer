@@ -157,8 +157,15 @@ private:
     // 上一次没推进包队列的包（队列满），下次循环重试
     AVPacket* m_pendingPkt = nullptr;
 
-    //是否暂停
-    //std::atomic<bool> m_isPause = false;
+    /*
+     * 用户意图：是否暂停。**只有 setPause()（即 UI 的播放/暂停命令）能改它。**
+     * doSeek() 期间为停生产只推 CTX_IS_PAUSE=1（ctx），不要改这个值 ——
+     * 以前 doSeek 会把它临时置 true 再按开头快照恢复，导致
+     *   ① requestSeekMs 采样到"临时暂停"当成用户意图 → seek 结束后卡在暂停；
+     *   ② seek 期间用户按的播放/暂停被快照覆盖 → "快进后要按两次播放"。
+     * 现在 doSeek 结尾直接读它恢复，同步可见，不会失真。
+     */
+    std::atomic<bool> m_isPause = false;
     //是否退出
     //DemuxThread 自己的停止标志：close() 直接置它，不依赖 PlayerCore 把
     //CTX_IS_EXIT 消息处理完 —— 否则 close() 里 join 自己这条线程会永远等不到。
@@ -214,8 +221,7 @@ private:
     //（逐帧状态已上移，见 m_isFrameStep）
     //进入逐帧之前的暂停状态（退出逐帧时恢复）
     std::atomic<bool> m_pauseBeforeStep = false;
-    //正在处理的 seek 结束后应该恢复成什么暂停状态
-    std::atomic<bool> m_pauseAfterSeek = false;
+    //（seek 结束该恢复成什么，已改成读 m_isPause，不再单独保存快照）
 
     // 实际解析出来的封装名（std::string，core 不再用 QString）
     std::string m_containerName;
