@@ -94,6 +94,9 @@ void PlayerCore::setMessageHandler()
                 }
                     break;
                 }
+            case CMD_STEP_STOP:
+                    dt.endFrameStep();
+                    break;
             case CMD_SET_SPEED:
                 {
                     // arg1=速率×10（10=1.0x，）

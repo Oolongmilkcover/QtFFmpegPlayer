@@ -40,6 +40,7 @@ bool AudioThread::open(AVStream *audioStream, IAudioOutput* out)
     m_audioStream = audioStream;
     if(out == nullptr){
         m_out = new NullAudioPlayer();
+        m_outIsNullAudioPlayer.store(true);
     }else{
         m_out = out;
     }
@@ -106,6 +107,11 @@ void AudioThread::close()
 
     if (m_out) {
         m_out->close();
+        if(m_outIsNullAudioPlayer.load() && m_out){
+            delete m_out;
+            m_outIsNullAudioPlayer.store(false);
+            m_out = nullptr;
+        }
     }
     m_audioPts.store(0);
 
@@ -430,6 +436,7 @@ void AudioThread::playRun()
 
         if (bytesPerSample <= 0)
         {
+            av_frame_free(&audioFrame);
             m_frameQue->next();
             logDebug()<<"bytesPerSample <= 0";
             continue;

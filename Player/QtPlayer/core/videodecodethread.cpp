@@ -131,6 +131,8 @@ bool VideoDecodeThread::repaintPts(AVPacket *pkt, int64_t seekpts,int serial,int
      * 退出逐帧/拖动进度条时看到的就是“seek 触发了但位置不对”。
      */
     // 发送 pkt（send 内部会释放 pkt）
+    //上解码锁 （不知道会不会死锁
+    std::lock_guard<std::mutex> gate(m_decodeGate);
     if (!send(pkt)) {
         return false;
     }
@@ -153,6 +155,7 @@ bool VideoDecodeThread::repaintPts(AVPacket *pkt, int64_t seekpts,int serial,int
             realPts = -1;
         }
     }
+
 
     return found;
 }

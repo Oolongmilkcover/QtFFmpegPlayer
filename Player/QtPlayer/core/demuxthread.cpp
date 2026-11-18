@@ -280,6 +280,7 @@ bool DemuxThread::openFile(const char* url,PaintFrame cb , IAudioOutput* out)
     m_videoDecodeThread->setHasAudio(m_hasAudio);
     if(!tmpRet){
         closeAVThread();
+        return tmpRet;
     }else{
         isCompleteInit = true;
         setPause(false);
@@ -347,6 +348,7 @@ void DemuxThread::startFrameStep()
     if(m_playerctx->getIsFrameStep()){
         return;//已经在逐帧了
     }else{
+        m_isFrameStep.store(true);
         m_msgQue->push(std::move(m_msgQue->getMsg(ContextChange::CTX_IS_FRAME_STEP,1)));
     }
 
@@ -363,9 +365,11 @@ void DemuxThread::startFrameStep()
 void DemuxThread::endFrameStep()
 {
     //if (!m_isFrameStep.exchange(false)) return;
+    if (!m_isFrameStep.load()) return;
     if(!m_playerctx->getIsFrameStep()){
         return;
     }else{
+        m_isFrameStep.store(false);
         m_msgQue->push(std::move(m_msgQue->getMsg(ContextChange::CTX_IS_FRAME_STEP,0)));
     }
 
@@ -447,40 +451,40 @@ bool DemuxThread::requestSeekMs(long long ms)
     //m_seekMs.store(ms);
     m_msgQue->push(std::move(m_msgQue->getMsg(ContextChange::CTX_SEEKMS,ms)));
     m_serial.fetch_add(1);
-    //纯音频（MP3等）：底层直接 seek
-    if (m_disableSeekFlag) {
-        bool wasPause = m_playerctx->getIsPause();
-        m_seekPauseing.store(true);
-        setPause(true); // 先暂停
-        {
-            std::lock_guard<std::mutex> lock(m_mutex);
-            if (m_fmt_ctx && m_hasAudio) {
-                // 清空音频队列
-                m_audioThread->clear();
-                // 注意：clear() 会把音频时钟(m_audioPts)一起清零，而进度条读的就是这个时钟，
-                // 于是 seek 后会闪一下“回到开头”，连环快进也会因为读到 0 而永远算成 0+5000。
-                // 这里只是把时钟锚到本次 seek 目标；等新音频解码出来，sendPts 会自然接管。
-                m_audioThread->sendPts(ms);
-                pts.store(ms);
-                avformat_flush(m_fmt_ctx);
-                int64_t ts = av_rescale_q(ms, {1, 1000}, m_audioTimebase);
-                av_seek_frame(m_fmt_ctx, m_audioStream, ts, AVSEEK_FLAG_BACKWARD);
-                // 解码器 flush，丢弃 seek 前的残留
-                m_audioThread->flushBuf();
-                // 重置重采样器 + atempo 滤镜（丢弃残留）
-                m_audioThread->requestFilterReset();
-                // 同步 serial
-                m_audioThread->setSerial(m_serial.load());
-            }
-        }
-        // 无论上面的 if 是否进去过，都必须清掉“seek 进行中”：
-        // 否则 m_fmt_ctx 为空 / 没有音频流时它会永久停在 true，
-        // player.cpp 的 queueSeekBy 开头会直接 return，快进/快退彻底失效。
-        m_seekPauseing.store(false);
-        setPause(wasPause);
-        m_msgQue->push(std::move(m_msgQue->getMsg(PlayerEvent::EVT_SEEK_DONE,ms)));
-        return true;
-    }
+    // //纯音频（MP3等）：底层直接 seek
+    // if (m_disableSeekFlag) {
+    //     bool wasPause = m_playerctx->getIsPause();
+    //     m_seekPauseing.store(true);
+    //     setPause(true); // 先暂停
+    //     {
+    //         std::lock_guard<std::mutex> lock(m_mutex);
+    //         if (m_fmt_ctx && m_hasAudio) {
+    //             // 清空音频队列
+    //             m_audioThread->clear();
+    //             // 注意：clear() 会把音频时钟(m_audioPts)一起清零，而进度条读的就是这个时钟，
+    //             // 于是 seek 后会闪一下“回到开头”，连环快进也会因为读到 0 而永远算成 0+5000。
+    //             // 这里只是把时钟锚到本次 seek 目标；等新音频解码出来，sendPts 会自然接管。
+    //             m_audioThread->sendPts(ms);
+    //             pts.store(ms);
+    //             avformat_flush(m_fmt_ctx);
+    //             int64_t ts = av_rescale_q(ms, {1, 1000}, m_audioTimebase);
+    //             av_seek_frame(m_fmt_ctx, m_audioStream, ts, AVSEEK_FLAG_BACKWARD);
+    //             // 解码器 flush，丢弃 seek 前的残留
+    //             m_audioThread->flushBuf();
+    //             // 重置重采样器 + atempo 滤镜（丢弃残留）
+    //             m_audioThread->requestFilterReset();
+    //             // 同步 serial
+    //             m_audioThread->setSerial(m_serial.load());
+    //         }
+    //     }
+    //     // 无论上面的 if 是否进去过，都必须清掉“seek 进行中”：
+    //     // 否则 m_fmt_ctx 为空 / 没有音频流时它会永久停在 true，
+    //     // player.cpp 的 queueSeekBy 开头会直接 return，快进/快退彻底失效。
+    //     m_seekPauseing.store(false);
+    //     setPause(wasPause);
+    //     m_msgQue->push(std::move(m_msgQue->getMsg(PlayerEvent::EVT_SEEK_DONE,ms)));
+    //     return true;
+    // }
 
     //其余情况
     //注意：这里不改暂停状态，doSeek() 会按 m_pauseAfterSeek 保存/恢复，
@@ -509,7 +513,7 @@ void DemuxThread::close()
     m_isExit.store(true);
     m_msgQue->push(std::move(m_msgQue->getMsg(ContextChange::CTX_IS_EXIT,1)));
     //退出逐帧（这里不做位置对齐，马上要关了）
-    //m_isFrameStep.store(false);
+    m_isFrameStep.store(false);
     m_msgQue->push(std::move(m_msgQue->getMsg(ContextChange::CTX_IS_FRAME_STEP,0)));
     //m_isSeeking.store(false);
     m_msgQue->push(std::move(m_msgQue->getMsg(ContextChange::CTX_IS_SEEKING,0)));
@@ -570,6 +574,7 @@ void DemuxThread::close()
     m_seekPauseing.store(false);   // 兜底：别把“seek 进行中”带进下一次播放
     //复位"流媒体"：停机/换文件后这些机制默认可用，下次 openFile 会按新 URL 重新判定
     m_isStreamMedia.store(false);
+    m_msgQue->push(std::move(m_msgQue->getMsg(ContextChange::CTX_IS_STREAM_MEDIA,0)));
     std::lock_guard<std::mutex> lock(m_mutex);
     if (m_fmt_ctx) {
         avformat_close_input(&m_fmt_ctx);
@@ -763,6 +768,46 @@ void DemuxThread::doSeek()
         av_packet_free(&m_pendingPkt);
         m_pendingPkt = nullptr;
     }
+    //seek（目标毫秒由 requestSeekMs 统一换算好）
+    int64_t seekMs = m_playerctx->getSeekMs();
+
+
+    //纯音频（MP3等）：底层直接 seek
+    if (m_disableSeekFlag) {
+        bool wasPause = m_playerctx->getIsPause();
+        m_seekPauseing.store(true);
+        setPause(true); // 先暂停
+        {
+            std::lock_guard<std::mutex> lock(m_mutex);
+            if (m_fmt_ctx && m_hasAudio) {
+                // 清空音频队列
+                m_audioThread->clear();
+                // 注意：clear() 会把音频时钟(m_audioPts)一起清零，而进度条读的就是这个时钟，
+                // 于是 seek 后会闪一下“回到开头”，连环快进也会因为读到 0 而永远算成 0+5000。
+                // 这里只是把时钟锚到本次 seek 目标；等新音频解码出来，sendPts 会自然接管。
+                m_audioThread->sendPts(seekMs);
+                pts.store(seekMs);
+                avformat_flush(m_fmt_ctx);
+                int64_t ts = av_rescale_q(seekMs, {1, 1000}, m_audioTimebase);
+                av_seek_frame(m_fmt_ctx, m_audioStream, ts, AVSEEK_FLAG_BACKWARD);
+                // 解码器 flush，丢弃 seek 前的残留
+                m_audioThread->flushBuf();
+                // 重置重采样器 + atempo 滤镜（丢弃残留）
+                m_audioThread->requestFilterReset();
+                // 同步 serial
+                m_audioThread->setSerial(m_serial.load());
+            }
+        }
+        // 无论上面的 if 是否进去过，都必须清掉“seek 进行中”：
+        // 否则 m_fmt_ctx 为空 / 没有音频流时它会永久停在 true，
+        // player.cpp 的 queueSeekBy 开头会直接 return，快进/快退彻底失效。
+        m_seekPauseing.store(false);
+        setPause(wasPause);
+        m_msgQue->push(std::move(m_msgQue->getMsg(PlayerEvent::EVT_SEEK_DONE,seekMs)));
+        return ;
+    }
+
+
 
     // 1先保存暂停状态（以“seek 结束后该恢复成什么状态”为准）
     bool wasPause = m_pauseAfterSeek.load();
@@ -796,8 +841,6 @@ void DemuxThread::doSeek()
     if(m_hasAudio) m_audioThread->clear();
     if (renderParked) m_videoDecodeThread->unparkRenderer();
 
-    //2.seek（目标毫秒由 requestSeekMs 统一换算好）
-    int64_t seekMs = m_playerctx->getSeekMs();
     // 同上：上面的 clear() 已经把音频时钟清零，这里把它锚回本次 seek 目标，
     // 避免进度条闪回开头、以及连环快进读到 0 而一直算成 0+5000。
     if (m_hasAudio && m_audioThread) m_audioThread->sendPts(seekMs);

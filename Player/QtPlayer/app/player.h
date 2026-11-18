@@ -5,6 +5,7 @@
 #include <QListWidgetItem>
 #include <QWidget>
 #include "core/perfclock.h"
+#include <QString>
 class PlayerCore;
 struct PlayerMessage;
 class VideoWidget;

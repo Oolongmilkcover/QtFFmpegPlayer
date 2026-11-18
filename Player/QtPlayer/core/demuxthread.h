@@ -174,8 +174,8 @@ private:
     //demux 线程本体
     std::thread m_dumuxThread;
 
-    //run() 及内部循环的退出判断：自己收到停止，或 PlayerCore 要求整体退出
-    bool shouldExit() const { return m_isExit.load() || (m_playerctx && m_playerctx->getIsExit()); }
+    //run() 及内部循环的退出判断：自己收到停止
+    bool shouldExit() const { return m_isExit.load() ; }
 
     //音视频流
     int m_videoStream = -1;
@@ -191,10 +191,9 @@ private:
     //完成初始化了
     std::atomic<bool> isCompleteInit = false;
 
-    //异步seek
-    //std::atomic<bool> m_isSeeking = false;
-    //seek目标（毫秒）
-    //std::atomic<long long> m_seekMs = 0;
+
+    //是否处于逐帧
+    std::atomic<bool> m_isFrameStep{false};
 
     std::atomic<bool> m_eof = false;
 

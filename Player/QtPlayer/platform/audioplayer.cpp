@@ -163,4 +163,5 @@ AudioPlayer::AudioPlayer()
 
 AudioPlayer::~AudioPlayer()
 {
+    this->close();
 }

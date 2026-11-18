@@ -319,6 +319,8 @@ void Player::stopToPlay()
     ui->video->clearScreen();
     //停机后不再有"流媒体"状态，这些机制恢复默认可用（下次 playFile 会按新片源重新判定）
     ui->ctrlbar->setStreamMode(false);
+    ui->ctrlbar->setSliderMaximum(0);
+    ui->ctrlbar->setSliderValue(0);
     ui->ctrlbar->setDisabled(true);
     ui->topMenu->setNoPlayText();
     m_videoSrcH = 0;
@@ -383,49 +385,47 @@ void Player::playFile(const QString &path)
         delete static_cast<CMD_OPEN_OBJ*>(p);
     });
 
-
-
-    //ui->video->setPerfStartNs(startNs);
-
     emit setPlayingText(path);
-    this->showNormal();
-    m_isInit = true;
-    /*
-     * 流媒体：把快进/快退/逐帧/倍速/上下集这些入口整体关掉（按钮 + 快捷键 + 进度条），
-     * 换回本地视频时这里会重新判定并自动恢复。
-     */
-    ui->ctrlbar->setStreamMode(m_playerCtx->getIsStreamMedia());
-    if (m_playerCtx->getIsStreamMedia() && m_speed != 1.0) {
-        //倍速已经被 DemuxThread::openFile 强制拉回 1.0，标签也得跟着回到 1.0，
-        //否则界面写着 2.0x、实际按 1.0x 播，而倍速按钮又是灰的，用户无从判断。
-        m_speed = 1.0;
-        ui->ctrlbar->setSpeedLabel(m_speed);
-    }
-    // 重置滑块状态，避免之前操作的影响
-    isSliderPress = false;                 // 清除按下标志
-    // 换文件时丢弃上一次遗留的待生效 seek 与去抖定时器
-    if (m_seekDebounceTimerId) {
-        killTimer(m_seekDebounceTimerId);
-        m_seekDebounceTimerId = 0;
-    }
-    m_pendingSeekMs = -1;
-    ui->ctrlbar->setDisabled(false);
-    setVolume(m_nowVolume);
-    if (m_timerId)
-        killTimer(m_timerId);
-    //用于进度条的计时器？
-    m_timerId = startTimer(16);
-    update();
-    resizeEvent(nullptr);
-    setPausePicture(m_playerCtx->getIsPause());
-    if(!m_playerCtx->getIsPause()){
-        play();
-    }else{
-        pause();
-    }
-    if (!m_playerCtx->getHasVideo()) {
-        ui->video->clearScreen();   // 纯音频：黑屏
-    }
+    //这部分放到EVT_PREPARED,要等到处理好信息才设置否则读的就是上次的数据
+    // //ui->video->setPerfStartNs(startNs);
+    // this->showNormal();
+    // m_isInit = true;
+    // /*
+    //  * 流媒体：把快进/快退/逐帧/倍速/上下集这些入口整体关掉（按钮 + 快捷键 + 进度条），
+    //  * 换回本地视频时这里会重新判定并自动恢复。
+    //  */
+    // ui->ctrlbar->setStreamMode(m_playerCtx->getIsStreamMedia());
+    // if (m_playerCtx->getIsStreamMedia() && m_speed != 1.0) {
+    //     //倍速已经被 DemuxThread::openFile 强制拉回 1.0，标签也得跟着回到 1.0，
+    //     //否则界面写着 2.0x、实际按 1.0x 播，而倍速按钮又是灰的，用户无从判断。
+    //     m_speed = 1.0;
+    //     ui->ctrlbar->setSpeedLabel(m_speed);
+    // }
+    // // 重置滑块状态，避免之前操作的影响
+    // isSliderPress = false;                 // 清除按下标志
+    // // 换文件时丢弃上一次遗留的待生效 seek 与去抖定时器
+    // if (m_seekDebounceTimerId) {
+    //     killTimer(m_seekDebounceTimerId);
+    //     m_seekDebounceTimerId = 0;
+    // }
+    // m_pendingSeekMs = -1;
+    // ui->ctrlbar->setDisabled(false);
+    // setVolume(m_nowVolume);
+    // if (m_timerId)
+    //     killTimer(m_timerId);
+    // //用于进度条的计时器？
+    // m_timerId = startTimer(16);
+    // update();
+    // resizeEvent(nullptr);
+    // setPausePicture(m_playerCtx->getIsPause());
+    // if(!m_playerCtx->getIsPause()){
+    //     play();
+    // }else{
+    //     pause();
+    // }
+    // if (!m_playerCtx->getHasVideo()) {
+    //     ui->video->clearScreen();   // 纯音频：黑屏
+    // }
 }
 
 void Player::playNext()
@@ -594,6 +594,48 @@ void Player::onEVT_PREPARED(PlayerMessage& msg)
         ui->ctrlbar->setSliderMaximum(durationMs);
         ui->ctrlbar->setSliderValue(0);
         m_widget->Init(m_videoSrcW,m_videoSrcH);
+
+        //ui->video->setPerfStartNs(startNs);
+        //emit setPlayingText(path);
+        this->showNormal();
+        m_isInit = true;
+        /*
+        * 流媒体：把快进/快退/逐帧/倍速/上下集这些入口整体关掉（按钮 + 快捷键 + 进度条），
+        * 换回本地视频时这里会重新判定并自动恢复。
+        */
+        ui->ctrlbar->setStreamMode(m_playerCtx->getIsStreamMedia());
+        if (m_playerCtx->getIsStreamMedia() && m_speed != 1.0) {
+            //倍速已经被 DemuxThread::openFile 强制拉回 1.0，标签也得跟着回到 1.0，
+            //否则界面写着 2.0x、实际按 1.0x 播，而倍速按钮又是灰的，用户无从判断。
+            m_speed = 1.0;
+            ui->ctrlbar->setSpeedLabel(m_speed);
+        }
+        // 重置滑块状态，避免之前操作的影响
+        isSliderPress = false;                 // 清除按下标志
+        // 换文件时丢弃上一次遗留的待生效 seek 与去抖定时器
+        if (m_seekDebounceTimerId) {
+            killTimer(m_seekDebounceTimerId);
+            m_seekDebounceTimerId = 0;
+        }
+        m_pendingSeekMs = -1;
+        ui->ctrlbar->setDisabled(false);
+        setVolume(m_nowVolume);
+        if (m_timerId)
+            killTimer(m_timerId);
+        //用于进度条的计时器？
+        m_timerId = startTimer(16);
+        update();
+        resizeEvent(nullptr);
+        setPausePicture(m_playerCtx->getIsPause());
+        if(!m_playerCtx->getIsPause()){
+            play();
+        }else{
+            pause();
+        }
+        if (!m_playerCtx->getHasVideo()) {
+            ui->video->clearScreen();   // 纯音频：黑屏
+        }
+
     },Qt::QueuedConnection);
 }
 
@@ -705,8 +747,11 @@ void Player::setVideoPainterCb()
     m_videoCb = [this](AVFrame* frame) {
         if (!frame) return;
         QMetaObject::invokeMethod(m_widget, [this,frame]() {
+            m_widget->beginPaint();
             m_widget->setPaint(frame);
+            m_widget->endPaint();
         }, Qt::QueuedConnection);
+
     };
 
 }

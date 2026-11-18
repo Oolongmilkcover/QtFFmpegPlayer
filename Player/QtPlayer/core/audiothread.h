@@ -70,7 +70,7 @@ private:
 
     // 音频播放器
     IAudioOutput* m_out = nullptr;
-
+    std::atomic<bool> m_outIsNullAudioPlayer{false};
 
     // 重采样上下文
     SwrContext *m_swr_ctx = nullptr;

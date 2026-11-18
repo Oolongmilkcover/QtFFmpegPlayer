@@ -159,6 +159,8 @@ void VideoWidget::setPaint(AVFrame *frame)
 
     //刷新显示
     update();
+
+    endPaint();
 }
 void VideoWidget::Init(int width, int height)
 {
