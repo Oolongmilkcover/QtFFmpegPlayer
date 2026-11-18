@@ -1,8 +1,7 @@
 #include "core/videodecodethread.h"
 #include "core/log.h"
 #include "core/videorenderthread.h"
-#include "platform/videowidget.h"
-
+#include "core/frameconverter.h"
 extern"C"{
 #include "libavutil/frame.h"
 #include "libavcodec/packet.h"
@@ -89,18 +88,20 @@ bool VideoDecodeThread::open(AVStream* videoStream , PaintFrame cb)
     if (m_pktQue)   m_pktQue->reset();
     if (m_frameQue) m_frameQue->reset();
     //上一轮的逐帧状态全部作废
+
     needRefill.store(false);
     refillBoundaryPts.store(-1);
     m_stepDecoding.store(false);
     m_videoStream = videoStream;
     m_painter = std::move(cb);
+
     AVCodecParameters *para = videoStream->codecpar;
+    m_converter = new FrameConverter();
+    m_converter->ensure(para->width,para->height,(AVPixelFormat)para->format,para->width,para->height);
 
     m_serial = 0;
-
     m_videoRenderThread->serial = 0;
     m_videoRenderThread->clearStepRequests();
-
     bool ret = codecInit(para);
     if (ret) {
         setFps(videoStream);
@@ -152,7 +153,14 @@ bool VideoDecodeThread::repaintPts(AVPacket *pkt, int64_t seekpts,int serial,int
     bool found = false;
 
     while (!found && !m_isExit) {
-        AVFrame* frame = recv();
+
+        AVFrame* tmpFrame = recv();
+        if(!tmpFrame){
+            break;
+        }
+        AVFrame* frame = m_converter->convert(tmpFrame);
+        av_frame_free(&tmpFrame);
+
         if (!frame) break;
         //统一换算成毫秒
         int64_t frameMs = framePtsMs(frame, m_videoStream->time_base);
@@ -228,10 +236,16 @@ void VideoDecodeThread::run()
         //一包多帧，recv到FrameQueue
         while(!m_isExit && !m_stepDecoding.load()){
             //得到一个解码后的帧
-            AVFrame* avFrame = recv();
-            if(!avFrame){
+            AVFrame* tmpFrame = recv();
+            if(!tmpFrame){
                 break;
             }
+            AVFrame* avFrame = m_converter->convert(tmpFrame);
+            av_frame_free(&tmpFrame);
+            if(!avFrame) {
+                break;
+            }
+
             if(pktSerial != m_serial.load()){
                 av_frame_free(&avFrame);
                 break;

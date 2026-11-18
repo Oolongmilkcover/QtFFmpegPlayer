@@ -225,6 +225,7 @@ private:
 
     // 实际解析出来的封装名（std::string，core 不再用 QString）
     std::string m_containerName;
+    //当作音频文件符号
     std::atomic<bool> m_disableSeekFlag{false};
 
     /*
@@ -255,8 +256,6 @@ private:
         "wv",
         "tta"
     };
-
-    //std::atomic<double> m_speed{1.0};
 };
 
 #endif // DEMUXTHREAD_H

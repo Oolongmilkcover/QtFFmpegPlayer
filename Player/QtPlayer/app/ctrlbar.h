@@ -61,6 +61,13 @@ public slots:
      */
     void setStreamMode(bool isStream);
 
+    /*
+     * 逐帧入口开关：纯音频（没有视频流）时直接关掉“上一帧/下一帧”，
+     * 而不是让用户点进去再被核心拒绝（那会切出一个假的逐帧外观、还把按钮锁住）。
+     * 与 setStreamMode 的区别：只动这两个按钮，不影响进度条/上下集/倍速。
+     */
+    void setFrameStepEnabled(bool on);
+
 protected:
     void resizeEvent(QResizeEvent *event) override;
 

@@ -287,6 +287,17 @@ void CtrlBar::stepFrameTime(bool flag)
 }
 
 /*
+ * 逐帧入口开关：纯音频直接用这个把“上一帧/下一帧”关掉。
+ * 之前是把按钮留着、等用户点了再让核心拒绝（stepNextFrame 返回 false），
+ * 结果 UI 已经切成逐帧外观、按钮也锁了，用户卡在一个没有帧可看的假逐帧状态里。
+ */
+void CtrlBar::setFrameStepEnabled(bool on)
+{
+    ui->prevFrameBtn->setDisabled(!on);
+    ui->nextFrameBtn->setDisabled(!on);
+}
+
+/*
  * 流媒体模式：只灰掉"用不上"的控件。
  * 进度条一起禁用 —— 流媒体的位置不由客户端决定，能拖也没意义（也会让 NaN 那条路径彻底消失）。
  */

@@ -231,6 +231,7 @@ bool DemuxThread::openFile(const char* url,PaintFrame cb , IAudioOutput* out)
 
             //判断是否为音频文件 是就关闭seek
             m_disableSeekFlag = false;
+            m_msgQue->push(std::move(m_msgQue->getMsg(ContextChange::CTX_IS_AUDIO_MEDIA,0)));
             m_containerName.clear();
             if(m_fmt_ctx->iformat != nullptr)
             {
@@ -241,6 +242,7 @@ bool DemuxThread::openFile(const char* url,PaintFrame cb , IAudioOutput* out)
                 if(m_audioOnlyFormat.count(toLowerAscii(m_containerName)) > 0)
                 {
                     m_disableSeekFlag = true;
+                    m_msgQue->push(std::move(m_msgQue->getMsg(ContextChange::CTX_IS_AUDIO_MEDIA,1)));
                     logDebug()<<"检测到音频文件";
                 }
             }
@@ -547,6 +549,7 @@ void DemuxThread::close()
         m_pendingPkt = nullptr;
     }
     m_disableSeekFlag = false;
+    m_msgQue->push(std::move(m_msgQue->getMsg(ContextChange::CTX_IS_AUDIO_MEDIA,0)));
     m_containerName.clear();
     m_seekPauseing.store(false);   // 兜底：别把“seek 进行中”带进下一次播放
     //复位"流媒体"：停机/换文件后这些机制默认可用，下次 openFile 会按新 URL 重新判定
@@ -564,6 +567,7 @@ void DemuxThread::close()
     m_hasVideo = false;
     m_hasAudio = false;
     pts = 0;
+    m_msgQue->push(std::move(m_msgQue->getMsg(PlayerEvent::EVT_CLEARSCREEN)));
 }
 
 void DemuxThread::clear()

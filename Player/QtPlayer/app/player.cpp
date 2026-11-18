@@ -345,9 +345,8 @@ void Player::stopToPlay()
     m_seekUiHoldUntilMs = 0;
     m_canSeek           = true;
     m_canSeekUntilMs    = 0;
-    //dt.close();
     m_playerCore->postMessage(PlayerCmd::CMD_STOP);
-    ui->video->clearScreen();
+    m_widget->clearScreen();
     //停机后不再有"流媒体"状态，这些机制恢复默认可用（下次 playFile 会按新片源重新判定）
     ui->ctrlbar->setStreamMode(false);
     ui->ctrlbar->setSliderMaximum(0);
@@ -357,7 +356,7 @@ void Player::stopToPlay()
     m_videoSrcH = 0;
     m_videoSrcW = 0;
     m_isInit = false;
-    ui->video->clearScreen();
+    m_widget->clearScreen();
 }
 
 
@@ -455,11 +454,13 @@ void Player::onPlayList_doubleClicked(QListWidgetItem *item)
 
 void Player::ffSeekFiveSec()
 {
+    if(m_playerCtx->getIsFrameStep()) return;
     queueSeekBy(+5000);
 }
 
 void Player::rewindSeekFiveSec()
 {
+    if(m_playerCtx->getIsFrameStep()) return;
     queueSeekBy(-5000);
 }
 
@@ -549,22 +550,23 @@ void Player::postSeek(long long targetMs)
 
 void Player::stepFrame(int mode)
 {
-    if(!m_isInit) return;
+    //未初始化和纯音频文件不能逐帧
+    if(!m_isInit || m_playerCtx->getIsAudioMedia()) return;
     //流媒体没有"上一帧/下一帧"这个概念（底层也回退不了），不进入逐帧模式
     if(m_playerCtx->getIsStreamMedia()) return;
+    /*
+     * 纯音频没有帧可逐。正常情况下按钮已经被 CtrlBar::setFrameStepEnabled(false) 关掉了，
+     * 这里再挡一道是因为 F/D 快捷键不经过按钮。
+     * 挡住之后 UI 保持原状，不会切出“假的逐帧外观”（核心那边 stepNext/PrevFrame
+     * 对无视频流本来也是直接返回 false）。
+     */
+    if(!m_playerCtx->getHasVideo()) return;
     //上一帧 / 下一帧：进入逐帧模式（暂停渲染，解码继续）
-    //bool success = false;
     if(mode == 1){
-        //success = dt.stepNextFrame();
         m_playerCore->postMessage(PlayerCmd::CMD_STEP_FORWARD);
     }else{
-        //success = dt.stepPrevFrame();
         m_playerCore->postMessage(PlayerCmd::CMD_STEP_BACKWARD);
     }
-    // if(!success){
-    //     //不支持逐帧（没有视频流 / 纯音频文件）时保持原状
-    //     return;
-    // }
     if(!m_stepFrame){
         m_stepFrame = true;
         m_isPause = true;
@@ -633,6 +635,9 @@ void Player::onEVT_PREPARED(PlayerMessage& msg)
         * 换回本地视频时这里会重新判定并自动恢复。
         */
         ui->ctrlbar->setStreamMode(m_playerCtx->getIsStreamMedia());
+        //纯音频没有帧可逐：直接把逐帧入口关掉（按钮置灰），别让用户点进去再被核心拒绝
+        ui->ctrlbar->setFrameStepEnabled(m_playerCtx->getHasVideo()
+                                         && !m_playerCtx->getIsStreamMedia());
         if (m_playerCtx->getIsStreamMedia() && m_speed != 1.0) {
             //倍速已经被 DemuxThread::openFile 强制拉回 1.0，标签也得跟着回到 1.0，
             //否则界面写着 2.0x、实际按 1.0x 播，而倍速按钮又是灰的，用户无从判断。
@@ -702,15 +707,19 @@ void Player::onDISABLEBTN()
 {
     QMetaObject::invokeMethod(this,[this](){
         /*
-         * 只禁用按钮，**不要碰暂停图标**。
-         * 这里读到的 m_playerCtx->getIsPause() 是异步广播，而 seek 期间核心会把
+         * 只禁用控制栏，**不要碰暂停图标**，也**不要禁用顶栏**。
+         *
+         * 图标：这里读到的 m_playerCtx->getIsPause() 是异步广播，而 seek 期间核心会把
          * CTX_IS_PAUSE 临时置 1（为了先停生产）—— 拿它刷新图标就会把“正在播放”
          * 错判成“已暂停”：CtrlBar 的 m_isPause 被改成 true，而 Player::m_isPause 没变。
          * 两个源分叉后，第一次按空格/点播放会走反方向，表现为“要点两次才开始播”。
          * 暂停图标只由 play()/pause()/逐帧/打开文件改，它们都是用户动作，不会失真。
+         *
+         * 顶栏：里面有最小化/最大化/关闭和“打开文件”。seek 可能持续几百毫秒，全部禁用
+         * 会让用户连窗口都关不掉；万一 seek 卡住（坏文件/网络盘），界面就没有任何出口了。
+         * 要防的是“seek 期间再拖一次进度条”，那本来就属于控制栏。
          */
         ui->ctrlbar->setDisabled(true);
-        ui->topMenu->setDisabled(true);
     },Qt::QueuedConnection);
 
 }
@@ -718,9 +727,8 @@ void Player::onDISABLEBTN()
 void Player::onABLEBTN()
 {   
     QMetaObject::invokeMethod(this,[this](){
-        //同上：只恢复按钮，不碰暂停图标
+        //同上：只恢复控制栏，不碰暂停图标和顶栏
         ui->ctrlbar->setDisabled(false);
-        ui->topMenu->setDisabled(false);
     },Qt::QueuedConnection);
 }
 
@@ -784,6 +792,35 @@ void Player::onSEEkDONE(PlayerMessage &msg)
     onABLEBTN();
 }
 
+/*
+ * 停止播放后投一帧纯黑，保证画面不残留最后一帧。
+ *
+ * 为什么是 Y=16 而不是 0：播放链路是 limited range（16~235），
+ * "黑"对应 Y=16、U=V=128。填 0 在 limited 显示器上是溢出值，某些渲染路径会显示成异常色块。
+ *
+ * 顺序要求：必须在 clearScreen() 之后调用 —— 否则刚塞进来的黑帧会被清掉。
+ * 拿到 widget 之后 setPaint() 会接管所有权（含尺寸不匹配时丢弃并 free）。
+ */
+void Player::postBlackFrame()
+{
+    const int w = m_videoSrcW > 0 ? m_videoSrcW : 1280;
+    const int h = m_videoSrcH > 0 ? m_videoSrcH : 720;
+
+    AVFrame* black = av_frame_alloc();
+    if (!black) return;
+    black->format = AV_PIX_FMT_YUV420P;
+    black->width  = w;
+    black->height = h;
+    if (av_frame_get_buffer(black, 32) < 0) { av_frame_free(&black); return; }
+
+    memset(black->data[0], 16,  black->linesize[0] * h);
+    memset(black->data[1], 128, black->linesize[1] * (h / 2));
+    memset(black->data[2], 128, black->linesize[2] * (h / 2));
+
+    ui->video->beginPaint();        // 走既有的"最多一帧排队"名额
+    ui->video->setPaint(black);     // 所有权交给 widget
+    ui->video->endPaint();
+}
 void Player::setEventCallback()
 {
     m_playerCore->setEventCallBack([this](PlayerMessage& msg){
@@ -800,6 +837,12 @@ void Player::setEventCallback()
             break;
         case EVT_STATE_CHANGED:
             // arg1=新状态（IDLE/INITIALIZED/PREPARING/PREPARED/STARTED/PAUSED/COMPLETED/STOPPED/ERROR）
+            break;
+        case EVT_CLEARSCREEN:
+            QMetaObject::invokeMethod(this,[this](){
+                m_widget->clearScreen();
+                update();
+            },Qt::QueuedConnection);
             break;
         case EVT_DISABLEBTN:
             //关闭按钮
@@ -883,7 +926,7 @@ void Player::setVideoPainterCb()
 
 void Player::sliderSeek(double pos)
 {
-    if(!m_isInit) return;
+    if(!m_isInit || m_playerCtx->getIsFrameStep()) return;
     //用户主动拖动：丢弃还没生效的累积目标，免得它晚一步把进度拽回去
     if(m_seekDebounceTimerId){
         killTimer(m_seekDebounceTimerId);
@@ -1057,9 +1100,10 @@ void Player::keyPressEvent(QKeyEvent *e)
         stepFrame(2);
         return;
     default:
+        //未处理的键交回基类（原来这句写在 switch 之后，所有分支都 return 了，是死代码）
+        QWidget::keyPressEvent(e);
         return;
     }
-    QWidget::keyPressEvent(e);
 }
 
 void Player::dragEnterEvent(QDragEnterEvent *e)

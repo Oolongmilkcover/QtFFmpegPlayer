@@ -27,6 +27,7 @@ enum PlayerEvent {
     EVT_PREPARED     = 100,            // arg1=时长ms, arg2=(宽<<16)|高
     EVT_POSITION,                      // arg1=当前播放位置ms（100~200ms 一次，别每帧发）
     EVT_STATE_CHANGED,                 // arg1=新状态（IDLE/INITIALIZED/PREPARING/PREPARED/STARTED/PAUSED/COMPLETED/STOPPED/ERROR）
+    EVT_CLEARSCREEN,                   // 清屏
     EVT_DISABLEBTN,                    //关闭按钮
     EVT_ABLEBTN,                       //开启按钮
     EVT_PLAYNEXT,                      //当前视频播放完毕请求播放下一个
@@ -47,6 +48,7 @@ enum ContextChange{
     CTX_HAS_PLAYLIST,                   //arg1 = 1/0
     CTX_IS_FRAME_STEP,                  //arg1 = 1/0
     CTX_IS_STREAM_MEDIA,                //arg1 = 1/0
+    CTX_IS_AUDIO_MEDIA,                 //arg1 = 1/0
     CTX_SPEED,                          //arg1 = 10*speed
 };
 

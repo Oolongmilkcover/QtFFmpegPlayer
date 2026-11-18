@@ -1,6 +1,5 @@
 #include "core/videorenderthread.h"
 #include "core/log.h"
-#include "platform/videowidget.h"
 extern "C"
 {
 #include <libavutil/frame.h>

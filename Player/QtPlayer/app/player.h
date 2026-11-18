@@ -209,6 +209,8 @@ private:
     int m_lastVideoH = 0;
 
 
+    void postBlackFrame();   // 停止后投一帧纯黑（yuv420p, Y=16/U=V=128）
+
     int m_videoSrcW = 0;   // 原始视频宽
     int m_videoSrcH = 0;   // 原始视频高
 

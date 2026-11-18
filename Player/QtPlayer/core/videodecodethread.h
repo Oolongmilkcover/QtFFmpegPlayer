@@ -9,15 +9,13 @@
 #define VIDEODECODETHREAD_H
 
 #include "core/decodethread.h"
-
-
 #include <thread>
 #include <atomic>
-#include <deque>
 #include <functional>
 #include <mutex>
 class VideoWidget;
 class VideoRenderThread;
+class FrameConverter;
 class VideoDecodeThread : public DecodeThread
 {
 public:
@@ -135,6 +133,9 @@ private:
     std::atomic<bool> m_stepDecoding{false};
     //回填期间会临时把 skip_frame 调成完整解码，这里保存原值用于恢复
     int m_originalSkip = 0;
+
+    //像素格式转换
+    FrameConverter* m_converter = nullptr;
 
 };
 

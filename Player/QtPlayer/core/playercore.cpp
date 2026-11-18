@@ -1,5 +1,4 @@
 #include "core/playercore.h"
-#include "core/log.h"
 #include "core/messageloopthread.h"
 #include "core/messagequeue.h"
 #include "core/playercontext.h"
@@ -184,6 +183,10 @@ void PlayerCore::setMessageHandler()
             case CTX_IS_STREAM_MEDIA:
                 //arg1 = 1/0
                 m_playerctx->setIsStreamMedia(msg.arg1==1?true:false);
+                break;
+            case CTX_IS_AUDIO_MEDIA:
+                //arg1 = 1/0
+                m_playerctx->setIsAudioMedia(msg.arg1==1?true:false);
                 break;
             case CTX_SPEED:
                 //arg1 = 10*speed
