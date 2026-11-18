@@ -131,7 +131,19 @@ bool VideoDecodeThread::repaintPts(AVPacket *pkt, int64_t seekpts,int serial,int
      * 退出逐帧/拖动进度条时看到的就是“seek 触发了但位置不对”。
      */
     // 发送 pkt（send 内部会释放 pkt）
-    //上解码锁 （不知道会不会死锁
+    /*
+     * 上解码闸门：send/recv 必须和解码线程（run() 第 205 行）、逐帧回填
+     * （refillBackward）串行，否则三方会在同一个 AVCodecContext 上交叉 send/recv，
+     * 目标帧可能被解码线程取走 → seek 落点偏、或 doSeek 的 while 多读一堆包。
+     *
+     * 这里不会死锁：持有闸门期间只做 send/recv（都是非阻塞，EAGAIN 就返回）
+     * 和 paint()（只是投递到 GUI 线程，不阻塞）。唯一会长时间阻塞的是
+     * FrameQueue::getWritable()，它只在解码线程里调；而 doSeek() 在调本函数之前
+     * 已经 parkRenderer()（abort 帧队列 → getWritable 立刻返回 nullptr 并让出闸门）
+     * 且 setPause(true)（解码线程不再从包队列取包），所以闸门一定是空闲的。
+     *
+     * 锁序固定为 m_viMutex → m_decodeGate；m_viMutex 只有本函数用，不会反向。
+     */
     std::lock_guard<std::mutex> gate(m_decodeGate);
     if (!send(pkt)) {
         return false;

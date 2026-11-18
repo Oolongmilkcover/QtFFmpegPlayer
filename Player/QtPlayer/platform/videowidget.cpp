@@ -139,6 +139,10 @@ void VideoWidget::endPaint()
  * 只"接管"这一帧的引用，不做任何拷贝：
  * 像素数据留在 AVFrame 里，paintGL() 直接从 frame->data[] 上传纹理。
  * 上一帧的引用在这里才还回去（所以 paintGL 期间数据一定有效）。
+ *
+ * 注意：本函数不负责 endPaint()。名额的归还在调用方（Player::m_videoCb 投递的
+ * lambda）里做，因为它必须覆盖"尺寸不匹配直接丢弃"这条提前 return 的分支 ——
+ * 否则丢一帧就把名额永久占死，之后再也上不了屏。
  */
 void VideoWidget::setPaint(AVFrame *frame)
 {
@@ -159,8 +163,6 @@ void VideoWidget::setPaint(AVFrame *frame)
 
     //刷新显示
     update();
-
-    endPaint();
 }
 void VideoWidget::Init(int width, int height)
 {

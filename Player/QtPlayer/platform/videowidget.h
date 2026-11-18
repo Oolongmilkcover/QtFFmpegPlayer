@@ -18,9 +18,15 @@ public:
     virtual void setPaint(AVFrame *frame);
 
     /*
-     * "上屏最新帧优先"用的两个钩子（渲染线程调用）：
+     * "上屏最新帧优先"用的两个钩子：
      * 同一时刻只允许一帧在 GUI 线程里排队等上屏，GUI 线程忙不过来时
      * 渲染线程直接丢帧，而不是把带 buffer 的帧一层层堆在事件队列里。
+     *
+     * 调用约定（两边必须成对，跨线程）：
+     *   beginPaint() —— 在**投递之前**由投帧的那条线程（渲染线程 / doSeek 的 demux 线程）调，
+     *                   返回 false 表示"GUI 还没消化上一帧"，这一帧应当丢弃；
+     *   endPaint()   —— 在 GUI 线程把这一帧交给 setPaint() **之后**调（setPaint 内部不再调），
+     *                   包括"尺寸不匹配被丢弃"的分支，否则名额会永久占死。
      */
     bool beginPaint();
     void endPaint();

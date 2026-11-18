@@ -743,15 +743,32 @@ void Player::setVideoPainterCb()
      *
      * 因此先 av_frame_clone() 克隆一份自己持有，连同 lambda 一起投递过去；
      * VideoWidget::setPaint() 会接管所有权（换指针或丢弃时 av_frame_free）。
+     *
+     * 背压（beginPaint/endPaint）：QueuedConnection 本身是无界的 —— GUI 线程这一帧
+     * 还没画完，渲染线程继续投，事件队列就会越堆越多（每个 lambda 揣一整帧，
+     * 1080p 约 3MB，几秒钟就能把内存堆上去，同时画面延迟越来越大）。
+     * 所以"抢名额"必须在**投递之前**（也就是渲染线程这边）做：抢不到就丢掉这一帧，
+     * 保证任意时刻最多只有一帧在 GUI 线程排队；名额在 setPaint() 返回后归还。
      */
     m_videoCb = [this](AVFrame* frame) {
         if (!frame) return;
-        QMetaObject::invokeMethod(m_widget, [this,frame]() {
-            m_widget->beginPaint();
-            m_widget->setPaint(frame);
-            m_widget->endPaint();
+
+        //抢名额失败 = GUI 线程还没消化上一帧 → 这一帧直接丢（丢帧优于无界堆积）
+        if (!m_widget->beginPaint()) {
+            av_frame_free(&frame);
+            return;
+        }
+
+        const bool posted = QMetaObject::invokeMethod(m_widget, [this, frame]() {
+            m_widget->setPaint(frame);   //接管并释放 frame（尺寸不匹配时也会释放）
+            m_widget->endPaint();        //归还名额：无论 setPaint 走哪条分支都要还
         }, Qt::QueuedConnection);
 
+        //投递失败（控件已销毁 / 没有事件循环）：自己收拾，否则名额会永久占死
+        if (!posted) {
+            av_frame_free(&frame);
+            m_widget->endPaint();
+        }
     };
 
 }

@@ -192,7 +192,15 @@ private:
     std::atomic<bool> isCompleteInit = false;
 
 
-    //是否处于逐帧
+    /*
+     * 是否处于逐帧 —— 本类是**唯一**权威状态源。
+     *   写：只有 startFrameStep() / endFrameStep() / close() 改它；
+     *   读：setPause / requestSeekMs / stepNext|PrevFrame / run / doBackwardRefill
+     *       一律读这个，**不要**再读 PlayerContext::getIsFrameStep()。
+     * 原因：PlayerContext 那份是发给 UI 的广播副本，要等消息循环处理完
+     * CTX_IS_FRAME_STEP 才更新，慢一整个消息往返；拿它做本类内部的判断，
+     * 会让 endFrameStep↔setPause 互相递归（详见 .cpp 里 endFrameStep 的注释）。
+     */
     std::atomic<bool> m_isFrameStep{false};
 
     std::atomic<bool> m_eof = false;
@@ -203,8 +211,7 @@ private:
     //主程序是否有播放列表
     //std::atomic<bool> m_hasPlayList = false;
 
-    //是否在逐帧
-    //std::atomic<bool> m_isFrameStep = false;
+    //（逐帧状态已上移，见 m_isFrameStep）
     //进入逐帧之前的暂停状态（退出逐帧时恢复）
     std::atomic<bool> m_pauseBeforeStep = false;
     //正在处理的 seek 结束后应该恢复成什么暂停状态

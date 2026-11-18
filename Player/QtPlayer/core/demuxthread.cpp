@@ -329,7 +329,10 @@ void DemuxThread::start()
 void DemuxThread::setPause(bool isPause)
 {
     //逐帧期间用户点了播放/暂停 → 先退出逐帧（内部会把播放位置对齐）
-    if (m_playerctx->getIsFrameStep()) endFrameStep();
+    //判断只认本类的 m_isFrameStep：PlayerContext 那份要等消息循环处理完
+    //CTX_IS_FRAME_STEP 才更新，拿它当"现在是否逐帧"会滞后一整个消息往返，
+    //而这正是 endFrameStep↔setPause 互递归的成因（见 endFrameStep 里的说明）。
+    if (m_isFrameStep.load()) endFrameStep();
 
     //正好有 seek 在处理时先别恢复渲染/解码，免得闪过期帧（doSeek 结束会按这个状态恢复）
     bool hold = m_playerctx->getIsSeeking();
@@ -345,12 +348,14 @@ void DemuxThread::startFrameStep()
 {
     if (!m_hasVideo || !m_videoDecodeThread) return;
     if (m_isStreamMedia.load()) return;            //流媒体没有可回退的"帧位置"，不支持逐帧      
-    if(m_playerctx->getIsFrameStep()){
+    if(m_isFrameStep.load()){
         return;//已经在逐帧了
-    }else{
-        m_isFrameStep.store(true);
-        m_msgQue->push(std::move(m_msgQue->getMsg(ContextChange::CTX_IS_FRAME_STEP,1)));
     }
+    //先落本地状态、再通知 UI。这样紧接着 stepNextFrame() 里的判断立刻就是"已在逐帧"，
+    //不会因为 CTX_IS_FRAME_STEP 还没被消息循环消费而误报失败
+    //（PlayerCore 会把 false 当成 stepNextFrame failed 弹错误框）。
+    m_isFrameStep.store(true);
+    m_msgQue->push(std::move(m_msgQue->getMsg(ContextChange::CTX_IS_FRAME_STEP,1)));
 
 
     //逐帧期间：demux 与解码线程继续工作，只暂停“渲染”
@@ -364,14 +369,15 @@ void DemuxThread::startFrameStep()
 
 void DemuxThread::endFrameStep()
 {
-    //if (!m_isFrameStep.exchange(false)) return;
-    if (!m_isFrameStep.load()) return;
-    if(!m_playerctx->getIsFrameStep()){
-        return;
-    }else{
-        m_isFrameStep.store(false);
-        m_msgQue->push(std::move(m_msgQue->getMsg(ContextChange::CTX_IS_FRAME_STEP,0)));
-    }
+    /*
+     * exchange(false)：进函数就把本地状态清掉，而且"谁先抢到谁负责收尾"。
+     * 这一步同时就是防重入——下面还要调 requestSeekMs() / setPause()，
+     * 它俩看到 m_isFrameStep==false 就不会再回调进本函数。
+     * （以前两边都拿 PlayerContext 判断：ctx 要等消息循环处理完
+     *   CTX_IS_FRAME_STEP 才更新，于是 endFrameStep↔setPause 一直互相调用到栈溢出。）
+     */
+    if (!m_isFrameStep.exchange(false)) return;
+    m_msgQue->push(std::move(m_msgQue->getMsg(ContextChange::CTX_IS_FRAME_STEP,0)));
 
     //进入逐帧之前是什么暂停状态，退出后就应该回到什么状态
     const bool wasPause = m_pauseBeforeStep.load();
@@ -397,10 +403,11 @@ void DemuxThread::endFrameStep()
 bool DemuxThread::stepNextFrame()
 {
     if(!m_hasVideo || m_disableSeekFlag || m_isStreamMedia.load() || !m_videoDecodeThread) return false;
-    if(!m_playerctx->getIsFrameStep()){
+    if(!m_isFrameStep.load()){
         startFrameStep();
     }
-    if(!m_playerctx->getIsFrameStep()) return false;
+    //startFrameStep 可能因为流媒体 / 没有视频流直接返回，这里以本地状态为准
+    if(!m_isFrameStep.load()) return false;
     m_videoDecodeThread->requestStep(1);
     return true;
 }
@@ -408,10 +415,11 @@ bool DemuxThread::stepNextFrame()
 bool DemuxThread::stepPrevFrame()
 {
     if(!m_hasVideo || m_disableSeekFlag || m_isStreamMedia.load() || !m_videoDecodeThread) return false;
-    if(!m_playerctx->getIsFrameStep()){
+    if(!m_isFrameStep.load()){
         startFrameStep();
     }
-    if(!m_playerctx->getIsFrameStep()) return false;
+    //同上：以 DemuxThread 自己的状态为准，不看 PlayerContext
+    if(!m_isFrameStep.load()) return false;
     m_videoDecodeThread->requestStep(-1);
     return true;
 }
@@ -445,7 +453,7 @@ bool DemuxThread::requestSeekMs(long long ms)
     if(totalMs > 0 && ms > totalMs) ms = totalMs;
 
     //逐帧中先退出逐帧（否则读位置和显示位置会对不上）
-    if (m_playerctx->getIsFrameStep()) endFrameStep();
+    if (m_isFrameStep.load()) endFrameStep();
 
 
     //m_seekMs.store(ms);
@@ -669,7 +677,7 @@ void DemuxThread::run()
 
         }
         // 时钟
-        if (m_playerctx->getIsFrameStep()) {
+        if (m_isFrameStep.load()) {
             //逐帧：进度条跟着屏幕上那一帧走
             if (m_hasVideo && m_videoDecodeThread)
                 pts.store(m_videoDecodeThread->getVideoRenderPts());
@@ -688,7 +696,7 @@ void DemuxThread::run()
         if (!pkt)
         {
             //已经快结束了准备下一集或者重播
-            if(m_eof && !m_playerctx->getIsFrameStep()){
+            if(m_eof && !m_isFrameStep.load()){
                 //有视频时
                 if(m_hasVideo && !m_disableSeekFlag){
                     m_videoDecodeThread->setLastSome(true);
@@ -739,7 +747,7 @@ void DemuxThread::run()
             //视频
             pushed = m_videoDecodeThread->tryPush(pkt,m_serial.load(),PUSH_TIMEOUT_MS);
         }else if(m_hasAudio && pkt->stream_index == m_audioStream && m_audioThread){
-            if(m_playerctx->getIsFrameStep()){
+            if(m_isFrameStep.load()){
                 //逐帧期间音频不推进（退出逐帧时会seek重新对齐），直接丢
                 av_packet_free(&pkt);
             }else{
@@ -938,7 +946,7 @@ void DemuxThread::doBackwardRefill()
     const int64_t boundaryMs = m_videoDecodeThread->refillBoundaryPts.load();
 
     //已经退出逐帧 / 没有有效边界 → 放弃这次回填
-    if(!m_playerctx->getIsFrameStep() || boundaryMs <= 0){
+    if(!m_isFrameStep.load() || boundaryMs <= 0){
         m_videoDecodeThread->finishRefill(false);
         return;
     }
@@ -996,7 +1004,7 @@ void DemuxThread::doBackwardRefill()
     //     << QString::number(costNs / 1e6, 'f', 2) << " ms";
 
     //4.回填期间用户退出了逐帧 → 读位置需要重新对齐
-    if(!m_playerctx->getIsFrameStep() && !shouldExit() && totalMs > 0){
+    if(!m_isFrameStep.load() && !shouldExit() && totalMs > 0){
         requestSeekMs(getVideoPts());
     }
 
