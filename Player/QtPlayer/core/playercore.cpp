@@ -53,6 +53,7 @@ void PlayerCore::setMessageHandler()
                     m_playerctx->setSetPlayingName(op->name);
                     if(!dt.openFile(op->name.c_str(), op->cb, op->out)){
                         postMessage(getErrorMsg("dt.openFile failed"));
+                        return;
                     }
                     dt.start();
                     break;
