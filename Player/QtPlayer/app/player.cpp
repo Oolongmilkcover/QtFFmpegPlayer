@@ -608,9 +608,14 @@ void Player::changeSpeed(double delta)
     if (newSpeed < 0.5) newSpeed = 0.5;
     if (newSpeed > 2.0)  newSpeed = 2.0;
     m_speed = newSpeed;
-    //dt.setSpeed(m_speed);
-    m_playerCore->postMessage(PlayerCmd::CMD_SET_SPEED,m_speed*10);
-    ui->ctrlbar->setSpeedLabel(m_speed);
+
+    /*
+     * 下发用四舍五入，不要直接 double→int 截断：0.1 在二进制里是循环小数，
+     * 累加几十次之后可能得到 1.6999999999999997 这种值，截断就变成 16（1.6x），
+     * 于是“按了一下居然没变/跳了一档”。
+     */
+    m_playerCore->postMessage(PlayerCmd::CMD_SET_SPEED, qRound(m_speed * 10.0));
+    ui->ctrlbar->setSpeedLabel(m_playerCtx->getSpeed());
 }
 
 void Player::onEVT_PREPARED(PlayerMessage& msg)
@@ -700,6 +705,7 @@ void Player::onEVT_POSITION(PlayerMessage &msg)
         if (!m_canSeek && now >= m_canSeekUntilMs) m_canSeek = true;
 
         ui->ctrlbar->setSliderValue(ms);
+        ui->ctrlbar->setSpeedLabel(m_playerCtx->getSpeed());
     },Qt::QueuedConnection);
 }
 

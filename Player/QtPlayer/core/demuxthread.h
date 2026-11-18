@@ -15,6 +15,7 @@ Seek 功能
 #include <functional>
 #include <mutex>
 #include <atomic>
+#include <chrono>
 #include <thread>
 
 
@@ -197,6 +198,9 @@ private:
     std::mutex m_mutex;
     //完成初始化了
     std::atomic<bool> isCompleteInit = false;
+
+    //上一次上报 EVT_POSITION 的时刻（只由 demux 线程读写）
+    std::chrono::steady_clock::time_point m_lastPosTime = std::chrono::steady_clock::now();
 
 
     /*

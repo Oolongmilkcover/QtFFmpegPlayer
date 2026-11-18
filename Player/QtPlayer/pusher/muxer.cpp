@@ -184,11 +184,17 @@ public:
         // 写已经坏过（比如连接被重置）：这时候再写 trailer 只会又报一次错，直接跳过。
         // （注意 abort() 不算"坏"：abort 只是打断卡住的数据写，trailer 仍然要尽力写出去。）
         if (m_broken) { m_wroteTrailer = true; return; }
-        // 撤销可能已经设上的"叫停"标志：abort() 是为了打断卡住的数据写，
-        // 而 trailer 是收尾动作（mp4 的 moov 就在里面），必须让它认真写完 ——
-        // 否则文件会直接打不开（这也是真实踩过的坑）。
-        if (m_abortFlag) m_abortFlag->store(false);
+        /*
+         * trailer 必须尽力写完（mp4 的 moov 就在里面），所以要把“叫停”暂时屏蔽掉。
+         * 但不能去 store(false) 复位编排层借来的 m_abortIo —— 那等于替编排层撤销了停机命令，
+         * 之后网络写又会“复活”，语义是错的（而且 stop() 那边还以为已经叫停了）。
+         * 做法：把中断回调的 opaque 临时指向一个只属于本次调用的“永不放行”标志，
+         * 写完再换回去。
+         */
+        std::atomic<bool> neverAbort{ false };
+        m_out->interrupt_callback.opaque = &neverAbort;
         const int ret = av_write_trailer(m_out);      // mp4 的 moov 箱就在这里写出去
+        m_out->interrupt_callback.opaque = m_abortFlag ? m_abortFlag : &m_abortSelf;
         m_wroteTrailer = true;
         if (ret < 0)
             logWarn() << "[muxer] av_write_trailer 失败:" << errStr(ret).c_str();

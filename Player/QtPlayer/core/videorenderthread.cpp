@@ -37,8 +37,8 @@ void VideoRenderThread::setFps(double fps)
     {
         fps = 25.0;
     }
-    m_fps = fps;
-    m_frameDurationMs = 1000.0 / m_fps / m_speed;
+    m_fps.store(fps);
+    m_frameDurationMs.store(1000.0 / m_fps.load() / m_speed.load());
     pts = 0;
     //logDebug()<<"视频fps:"<<m_fps;
 }
@@ -317,7 +317,8 @@ void VideoRenderThread::run()
         long long diff = videoPts - audioPts;
         int64_t compensate = 0;
         if (diff > SYNC_THRESHOLD) {
-            compensate = std::min<int64_t>((diff - SYNC_THRESHOLD) / 2, m_frameDurationMs);
+            compensate = std::min<int64_t>((diff - SYNC_THRESHOLD) / 2,
+                                           (int64_t)m_frameDurationMs.load());
             if(m_lastAudio_pts == audioPts){
                 compensate = 0;
             }
@@ -407,5 +408,5 @@ void VideoRenderThread::setSpeed(double speed)
 {
     if (speed <= 0) speed = 1.0;
     m_speed.store(speed);
-    m_frameDurationMs = 1000.0 / m_fps / speed;
+    m_frameDurationMs.store(1000.0 / m_fps.load() / speed);
 }

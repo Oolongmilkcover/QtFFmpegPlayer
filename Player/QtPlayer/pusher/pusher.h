@@ -125,8 +125,9 @@ private:
     std::unique_ptr<IAudioEncoder> m_audioEnc;
     // 流下标由编排层分配（addOutputStreams 里按实际加入顺序记录），编码器不再写死 0/1。
     // 这样以后加第三路流（比如录屏、第二路摄像头）时才不会悄悄串流。
-    int m_videoStreamIndex = -1;
-    int m_audioStreamIndex = -1;
+    // 用 atomic：重连时由写出线程重新赋值，编码线程的 sink 回调同时在读它。
+    std::atomic<int> m_videoStreamIndex{ -1 };
+    std::atomic<int> m_audioStreamIndex{ -1 };
     // muxer 只被写出线程碰（重连、写 trailer 都在那个线程里），所以 unique_ptr 就够。
     // stop() 不碰这个指针，它只置 m_abortIo —— 叫停标志住在 Pusher 里，就不存在指针被换掉的竞态。
     std::unique_ptr<IMuxer> m_muxer;

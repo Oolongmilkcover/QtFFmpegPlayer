@@ -1,6 +1,7 @@
 #ifndef PLAYERCONTEXT_H
 #define PLAYERCONTEXT_H
 #include<atomic>
+#include <mutex>
 #include <string>
 class  PlayerContext
 {
@@ -19,7 +20,13 @@ private:
     void setIsStreamMedia(bool val)            { m_isStreamMedia.store(val);}
     void setIsAudioMedia(bool val)             { m_isAudioMedia.store(val);}
     void setSpeed(double val)                  { m_speed.store(val);}
-    void setSetPlayingName(std::string& name)  { m_playingName = name;};
+    //m_playingName 是 std::string，不是原子量：写入方（消息循环线程）和读取方可能不同线程，
+    //所以单独用一把锁，别和上面那堆 atomic 混为一谈。
+    void setSetPlayingName(std::string& name)
+    {
+        std::lock_guard<std::mutex> lock(m_nameMutex);
+        m_playingName = name;
+    }
 
 public:
     //供demudex读
@@ -34,7 +41,11 @@ public:
     bool getIsStreamMedia()   const   {return m_isStreamMedia.load();}
     bool getIsAudioMedia()    const   {return m_isAudioMedia.load();}
     double getSpeed()         const   {return m_speed.load();}
-    std::string getPlayingName() const{return m_playingName;};
+    std::string getPlayingName() const
+    {
+        std::lock_guard<std::mutex> lock(m_nameMutex);
+        return m_playingName;
+    }
 
 private:
     //是否退出
@@ -73,6 +84,8 @@ private:
 
     //正在播放的名字
     std::string m_playingName;
+    //保护 m_playingName（getter 是 const，所以 mutable）
+    mutable std::mutex m_nameMutex;
 
 public:
     PlayerContext();

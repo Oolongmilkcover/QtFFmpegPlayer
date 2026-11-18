@@ -40,7 +40,6 @@ void PlayerCore::setMessageHandler()
     // 定义消息处理回调。外部（如 PlayerCore）注册这个回调，决定怎么处理消息
     //using MessageHandler = std::function<void(PlayerMessage& msg)>;
     MessageLoopThread::MessageHandler handler = [this](PlayerMessage& msg){
-        bool needFree = true;
         int what = msg.what;
         switch(what){
 
@@ -100,7 +99,7 @@ void PlayerCore::setMessageHandler()
             case CMD_SET_SPEED:
                 {
                     // arg1=速率×10（10=1.0x，）
-                    double speed = msg.arg1 / 10.0;
+                    double speed = static_cast<double>(msg.arg1) / 10.0;
                     dt.setSpeed(speed);
                     break;
                 }
@@ -140,8 +139,13 @@ void PlayerCore::setMessageHandler()
                 // 播到文件尾
             case EVT_ERROR:
                 // arg1=错误码, obj=std::string*(错误文本)
+                /*
+                 * 注意 obj 的生命周期：这里只是把消息转给 UI，**不转移所有权** ——
+                 * MessageLoopThread::loop() 在本回调返回后会统一 free_l(obj)。
+                 * 所以 UI 侧只能当场把内容拷走（Player::onEVT_ERROR 里就是
+                 * QString::fromStdString 拷一份），不能存指针。
+                 */
                 m_callBack(msg);
-                needFree = false;
                 break;
 
 
@@ -195,12 +199,8 @@ void PlayerCore::setMessageHandler()
 
 
             default:
-
+                // 未识别的 what：直接忽略（obj 仍由消息循环统一释放）
                 break;
-
-                if(needFree){
-
-                }
         }
     };
 
@@ -227,6 +227,8 @@ void PlayerCore::postMessage(int what, int arg1, int arg2, void *obj, std::funct
 void PlayerCore::start()
 {
     m_stopped = false;
+    //复位整体退出标志：上一轮 stop() 会把它置 true（见下面 stop() 里的说明）
+    if (m_playerctx) m_playerctx->setIsExit(false);
     m_loop->start();
 }
 
@@ -235,6 +237,17 @@ void PlayerCore::stop()
     // 幂等：析构里还会再调一次
     if (m_stopped) return;
     m_stopped = true;
+
+    /*
+     * 0) 先把"整体退出"标志置上，再停消息循环。
+     *
+     * 消息循环线程可能正卡在 CMD_OPEN 的 avformat_open_input 里（网络流：DNS、
+     * TCP 建连、协议握手都可能耗几秒到几十秒）。DemuxThread 的中断回调
+     * （shouldExit() → ctx.getIsExit()）是 FFmpeg 唯一能打断这些阻塞的入口，
+     * 所以必须在 join 之前把它置起来 —— 只置 dt 自己的 m_isExit（close() 里做）
+     * 要等 join 之后才轮到，那时已经晚了。
+     */
+    if (m_playerctx) m_playerctx->setIsExit(true);
 
     // 1) 先停消息循环（内部 join）—— 停完就不会再有回调打进 UI 线程
     if (m_loop) m_loop->stop();

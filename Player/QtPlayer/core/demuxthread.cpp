@@ -1022,14 +1022,14 @@ void DemuxThread::videoCallSeek(long long ms)
 void DemuxThread::checkTimeToPostPosition()
 {
     using namespace std::chrono;
-    static steady_clock::time_point lastTime = steady_clock::now();
-
+    //时间戳放成员里：原来用的是函数内 static，多个 DemuxThread 实例会共用同一个
+    //“上次发送时间”，换文件/多窗口时互相干扰（第一次发位置可能被推迟或提前）。
     auto now = steady_clock::now();
-    auto diff = duration_cast<milliseconds>(now - lastTime).count();
+    auto diff = duration_cast<milliseconds>(now - m_lastPosTime).count();
 
     if (diff >= 150) {
         m_msgQue->push(std::move(m_msgQue->getMsg(PlayerEvent::EVT_POSITION,pts)));
-        lastTime = now;
+        m_lastPosTime = now;
     }
 }
 

@@ -65,6 +65,8 @@ private:
     bool initAtempoFilter(double speed);
     // 释放滤镜图
     void freeAtempoFilter();
+    // 滤镜图是否可用：initAtempoFilter() 失败时三者会留空，此时只能走原速直通
+    bool atempoReady() const { return m_filterGraph && m_buffersrcCtx && m_buffersinkCtx; }
 
 private:
 

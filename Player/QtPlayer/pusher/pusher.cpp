@@ -94,21 +94,25 @@ bool Pusher::start()
     // ---------------------------------------------------------------- 编码 + 封装
     if (m_encodePath) {
         // ---- 视频编码器 ----
-        m_videoEnc = createVideoEncoder(m_cfg.encoder);
-        if (!m_videoEnc || !m_videoEnc->open(m_cfg.encoder)) {
-            logErr() << "[pusher] 视频编码器打开失败";
-            return false;
+        // 只有真的打开了视频源才建编码器：否则会得到一条"永远没有包"的视频流，
+        // mp4 里多一路空流会让某些播放器直接打不开（--no-video 之类以后一定会用到）。
+        if (m_video) {
+            m_videoEnc = createVideoEncoder(m_cfg.encoder);
+            if (!m_videoEnc || !m_videoEnc->open(m_cfg.encoder)) {
+                logErr() << "[pusher] 视频编码器打开失败";
+                return false;
+            }
+            // 编码器每产出一包就回调到这里。回调给的指针只在回调期间有效，所以必须 clone：
+            // av_packet_clone 只给码流数据加一次引用（不拷贝码流），队列最终负责 av_packet_free。
+            // [重点] 流下标在这里赋：编码器自己不知道"我是第几路"，由编排层按建流顺序分配。
+            //        sink 是在每次回调时才读 m_videoStreamIndex，而它早在起线程之前就设好了，所以顺序没问题。
+            m_videoEnc->setSink([this](AVPacket* pkt) {
+                AVPacket* copy = av_packet_clone(pkt);
+                if (!copy) return;
+                copy->stream_index = m_videoStreamIndex.load();
+                m_packetQueue->push(copy);
+            });
         }
-        // 编码器每产出一包就回调到这里。回调给的指针只在回调期间有效，所以必须 clone：
-        // av_packet_clone 只给码流数据加一次引用（不拷贝码流），队列最终负责 av_packet_free。
-        // [重点] 流下标在这里赋：编码器自己不知道"我是第几路"，由编排层按建流顺序分配。
-        //        sink 是在每次回调时才读 m_videoStreamIndex，而它早在起线程之前就设好了，所以顺序没问题。
-        m_videoEnc->setSink([this](AVPacket* pkt) {
-            AVPacket* copy = av_packet_clone(pkt);
-            if (!copy) return;
-            copy->stream_index = m_videoStreamIndex;
-            m_packetQueue->push(copy);
-        });
 
         // ---- 音频编码器（[第4步]）----
         if (m_audio) {
@@ -117,7 +121,7 @@ bool Pusher::start()
                 m_audioEnc->setSink([this](AVPacket* pkt) {
                     AVPacket* copy = av_packet_clone(pkt);
                     if (!copy) return;
-                    copy->stream_index = m_audioStreamIndex;
+                    copy->stream_index = m_audioStreamIndex.load();
                     m_packetQueue->push(copy);
                 });
             } else {
@@ -148,7 +152,8 @@ bool Pusher::start()
     if (m_video) m_videoThread = std::thread(&Pusher::videoCaptureLoop, this);
     if (m_audio) m_audioThread = std::thread(&Pusher::audioCaptureLoop, this);
     if (m_encodePath) {
-        m_encodeThread = std::thread(&Pusher::encodeLoop, this);
+        //没有视频编码器（纯音频）就没有帧要编，别起一个只会超时空转的线程
+        if (m_videoEnc) m_encodeThread = std::thread(&Pusher::encodeLoop, this);
         m_pushThread   = std::thread(&Pusher::pushLoop,   this);
     }
     return true;
@@ -156,8 +161,17 @@ bool Pusher::start()
 
 void Pusher::stop()
 {
-    if (!m_running.exchange(false))
+    const bool wasRunning = m_running.exchange(false);
+    if (!wasRunning) {
+        /*
+         * start() 中途失败：线程没起来，但采集源可能已经 open 成功了。
+         * 以前这里直接 return，设备句柄就一直开着（摄像头/麦克风被占住，
+         * 下次启动会失败），直到进程退出才释放。
+         */
+        if (m_video) m_video->close();
+        if (m_audio) m_audio->close();
         return;
+    }
 
     /*
      * 停止顺序（头文件里的第 3 条硬约定，顺序不能换）：
@@ -221,11 +235,11 @@ bool Pusher::addOutputStreams(IMuxer& muxer)
     int next = 0;
     if (m_videoEnc) {
         if (!muxer.addStream(m_videoEnc->codecpar(), m_videoEnc->timeBase())) return false;
-        m_videoStreamIndex = next++;
+        m_videoStreamIndex.store(next++);
     }
     if (m_audioEnc) {
         if (!muxer.addStream(m_audioEnc->codecpar(), m_audioEnc->timeBase())) return false;
-        m_audioStreamIndex = next++;
+        m_audioStreamIndex.store(next++);
     }
     return true;
 }
@@ -437,8 +451,13 @@ void Pusher::pushLoop()
         // 注意：只认视频关键帧。音频包（AAC）本身没有"参考帧"的概念，
         // 有些实现会给音频包打上 AV_PKT_FLAG_KEY，那样会把等待状态错误地清掉，
         // 结果从一个 P 帧开始写、画面花一段时间。
-        if (m_waitingKeyframe.load()) {
-            const bool isVideoKey = (pkt->stream_index == 0) && (pkt->flags & AV_PKT_FLAG_KEY);
+        //
+        // 只认“视频流”的关键帧：原来写死 stream_index == 0，audio-only 时 0 号是音频流，
+        // 又把 Key 标志当视频关键帧，会从一个 P 帧开始写；而没有视频流时更会一直等不到
+        // 关键帧、把所有包都丢掉，等于永远不恢复。
+        const int vidx = m_videoStreamIndex.load();
+        if (m_waitingKeyframe.load() && vidx >= 0) {
+            const bool isVideoKey = (pkt->stream_index == vidx) && (pkt->flags & AV_PKT_FLAG_KEY);
             if (!isVideoKey) {
                 av_packet_free(&pkt);
                 pkt = nullptr;
@@ -446,6 +465,9 @@ void Pusher::pushLoop()
             }
             m_waitingKeyframe.store(false);
             logInfo() << "[pusher] 收到视频关键帧，恢复写出";
+        } else if (m_waitingKeyframe.load()) {
+            //没有视频流：没有关键帧可等，直接继续写
+            m_waitingKeyframe.store(false);
         }
 
         const int pktSize = pkt->size;      // [重点] 先记下来：写完之后包会被 unref，size 会变 0

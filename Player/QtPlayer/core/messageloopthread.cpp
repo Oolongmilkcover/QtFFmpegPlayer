@@ -17,11 +17,13 @@ void MessageLoopThread::setMessageHandler(MessageHandler handler)
 
 void MessageLoopThread::start()
 {
-    if (m_running.exchange(true)) return;  //只启动一次
+    //先判队列再置运行标志：反过来的话"队列为空"早退会把 m_running 永久留在 true，
+    //之后 stop() 会拿着 m_queue==nullptr 去 abort()（空指针解引用）。
     if (!m_queue){
         logDebug()<<"m_queue is NULL";
         return;
     }
+    if (m_running.exchange(true)) return;  //只启动一次
     m_queue->start();
     m_thread = std::thread(&MessageLoopThread::loop, this);
 }
@@ -30,6 +32,7 @@ void MessageLoopThread::stop()
 {
     // 标志位设为 false；已经是 false 说明没在跑（或已经被停过），直接返回
     if (!m_running.exchange(false)) return;
+    if (!m_queue) return;
     // 唤醒可能正在阻塞等待的队列
     m_queue->abort();
     //  等待线程真正退出

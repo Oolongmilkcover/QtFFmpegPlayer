@@ -209,7 +209,13 @@ void AudioThread::decodeRun()
                 swr_init(m_swr_ctx);
             }
             // 重建滤镜 = 丢弃 seek 前 atempo 内部的旧样本
-            initAtempoFilter(m_currentSpeed);
+            if (!initAtempoFilter(m_currentSpeed)) {
+                //建不起来就把速度拉回 1.0，让后面的直通分支接住（否则 currentSpeed 还是
+                //旧值、滤镜却是空的，会一路走到 av_buffersrc_add_frame(nullptr,…)）
+                logDebug() << "atempo 重建失败，降级为原速直通";
+                m_currentSpeed.store(1.0);
+                m_desiredSpeed.store(1.0);
+            }
         }
 
         //速度变化时在解码线程里重建滤镜
@@ -224,9 +230,12 @@ void AudioThread::decodeRun()
                     swr_init(m_swr_ctx);
                 }
             } else {
-                // 重建失败：把目标速度改回当前值，避免死循环重试
-                m_desiredSpeed.store(m_currentSpeed);
-                logDebug() << "重建失败：把目标速度改回当前值，避免死循环重试" << desired;
+                // 重建失败：旧滤镜已经被 freeAtempoFilter 释放了，实际只能按原速播。
+                // 把“当前速度”也拉回 1.0 —— 否则 getPts() 还在按旧倍速换算内容轴时长，
+                // 音频时钟会一路漂，音画同步跟着乱。
+                m_currentSpeed.store(1.0);
+                m_desiredSpeed.store(1.0);
+                logDebug() << "atempo 重建失败，降级为原速直通" << desired;
             }
         }
 
@@ -308,7 +317,10 @@ void AudioThread::decodeRun()
                 m_ptsAnchorReady = true;
             }
             //原速时不走atempo
-            if(m_currentSpeed.load() >= 0.999 && m_currentSpeed.load() <= 1.001){
+            //滤镜没建起来（initAtempoFilter 失败过）也必须走直通：
+            //否则下面拿 nullptr 的 m_buffersrcCtx 去 av_buffersrc_add_frame，直接崩。
+            if(m_currentSpeed.load() >= 0.999 && m_currentSpeed.load() <= 1.001
+               || !atempoReady()){
                 Frame *frame = m_frameQue->getWritable();
                 if (!frame) {
                     av_frame_free(&resampled);

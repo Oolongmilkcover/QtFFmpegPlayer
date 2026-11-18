@@ -156,8 +156,17 @@ bool DecodeThread::codecInit(AVCodecParameters *para)
     }
     //创建解码器上下文
     m_codec_ctx = avcodec_alloc_context3(m_codec);
+    if (!m_codec_ctx) {
+        logDebug() << "avcodec_alloc_context3 failed";
+        return false;
+    }
     //配置解码器上下文参数
-    avcodec_parameters_to_context(m_codec_ctx,para);
+    if (avcodec_parameters_to_context(m_codec_ctx,para) < 0) {
+        logDebug() << "avcodec_parameters_to_context failed";
+        avcodec_free_context(&m_codec_ctx);
+        m_codec_ctx = nullptr;
+        return false;
+    }
     //设个八线程解码或是自动
     m_codec_ctx->thread_count = 0;
     //打开解码器上下文

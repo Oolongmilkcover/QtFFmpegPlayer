@@ -49,7 +49,7 @@ public:
     //设置视频帧率
     void setFps(double fps);
     //取视频帧率
-    double getFps() const { return m_fps; }
+    double getFps() const { return m_fps.load(); }
 
     // 设置倍速
     void setSpeed(double speed);
@@ -102,7 +102,12 @@ private:
 
     FrameQueue* m_frameQueue = nullptr;
 
-    double m_fps = 60;
+    /*
+     * fps / 帧时长：setFps()/setSpeed() 在消息循环线程调用，run() 在渲染线程里读，
+     * 所以必须是原子量。原来是裸 double —— 实打实的数据竞争（一边写一边读，
+     * 而且这两个值直接决定每帧睡多久）。
+     */
+    std::atomic<double> m_fps{60.0};
 
     int m_maxFrameDrop = 5;
 
@@ -112,7 +117,7 @@ private:
     std::atomic<double> m_speed{1.0};
 
 
-    double m_frameDurationMs = 1000.0 / m_fps;
+    std::atomic<double> m_frameDurationMs{1000.0 / 60.0};
 
     std::atomic<bool> m_isPause = false;
 
