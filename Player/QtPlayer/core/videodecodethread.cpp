@@ -96,8 +96,12 @@ bool VideoDecodeThread::open(AVStream* videoStream , PaintFrame cb)
     m_painter = std::move(cb);
 
     AVCodecParameters *para = videoStream->codecpar;
-    m_converter = new FrameConverter();
-    m_converter->ensure(para->width,para->height,(AVPixelFormat)para->format,para->width,para->height);
+    /*
+     * 转换器只建一次，close() 里释放。
+     * 不再在这里按 codecpar 的格式 ensure：解码器的实际输出可能和 codecpar 不一致
+     * （yuvj420p / nv12 / 10bit / 硬解），convert() 会按每一帧的真实格式自己 ensure。
+     */
+    if (!m_converter) m_converter = new FrameConverter();
 
     m_serial = 0;
     m_videoRenderThread->serial = 0;
@@ -320,6 +324,12 @@ void VideoDecodeThread::close()
     DecodeThread::clear();
     // 释放解码器
     DecodeThread::close();
+    /*
+     * 线程都 join 完了，转换器不再有人用，这里释放。
+     * （原来每次 open() 都 new 一个、从不 delete，换一次文件漏一个 SwsContext。）
+     */
+    delete m_converter;
+    m_converter = nullptr;
 }
 
 void VideoDecodeThread::stopAndClear()
@@ -418,7 +428,16 @@ bool VideoDecodeThread::refillBackward(int64_t boundaryMs, int serial,
         if (!send(pkt)) continue;        // send 内部释放 pkt
 
         while (!m_isExit) {
-            AVFrame* f = recv();
+            AVFrame* tmpFrame = recv();
+            if (!tmpFrame) break;
+
+            /*
+             * 回填的帧会被逐帧“上一帧/下一帧”直接上屏（进历史队列 → clone → paint），
+             * 所以这里也必须统一成 yuv420p，否则非 420p 的片源回退时仍然会把
+             * data[2] 为空的帧送到 VideoWidget。
+             */
+            AVFrame* f = m_converter ? m_converter->convert(tmpFrame) : nullptr;
+            av_frame_free(&tmpFrame);
             if (!f) break;
 
             //统一换算成毫秒

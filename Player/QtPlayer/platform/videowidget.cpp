@@ -10,6 +10,7 @@
 #include <QElapsedTimer>
 extern "C" {
 #include <libavutil/frame.h>
+#include <libavutil/pixfmt.h>   // AV_PIX_FMT_YUV420P：上屏前的准入判断
 }
 //自动加双引号
 #define GET_STR(x) #x
@@ -149,10 +150,27 @@ void VideoWidget::setPaint(AVFrame *frame)
     if (!frame) return;
 
     mux.lock();
-    //容错，保证尺寸正确
-    if (width*height == 0 || frame->width != this->width
-        || frame->height != this->height || !frame->data[0])
+    /*
+     * 准入判断：尺寸要对得上（纹理是按 Init 的宽高建的），并且必须是
+     * yuv420p 的三个平面 —— paintGL 里写死按 Y/U/V 上传，data[1]/data[2]
+     * 为空的格式（NV12 之类）会直接给 glTexSubImage2D 传空指针。
+     * core 侧 FrameConverter 已经把帧统一成 yuv420p，正常走不到这里；
+     * 万一还有漏网的，宁可丢这一帧并打日志，也不要在 GL 里踩空指针。
+     */
+    const bool sizeOk   = (width > 0 && height > 0
+                           && frame->width == this->width
+                           && frame->height == this->height);
+    const bool formatOk = (frame->format == AV_PIX_FMT_YUV420P
+                           && frame->data[0] && frame->data[1] && frame->data[2]);
+    if (!sizeOk || !formatOk)
     {
+        static int dropped = 0;
+        if (dropped++ < 10) {
+            qDebug() << "VideoWidget::setPaint 丢弃一帧: fmt=" << frame->format
+                     << " size=" << frame->width << "x" << frame->height
+                     << " 期望=" << width << "x" << height
+                     << " 已丢弃=" << dropped;
+        }
         mux.unlock();
         av_frame_free(&frame);
         return;
