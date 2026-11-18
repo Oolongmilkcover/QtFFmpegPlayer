@@ -120,8 +120,10 @@ public:
         msg.arg2 =arg2;
         msg.obj  =obj;
         msg.free_l = std::move(free_l) ;
-        if(msg.obj&& !msg.free_l){
+        if(msg.obj && !msg.free_l){
             msg.what = EVT_ERROR;
+            //不知道怎么free旧的obj
+            delete msg.obj;
             msg.obj = new std::string("this message created failed");
             msg.free_l = [](void* p){
                 delete static_cast<std::string*>(p);

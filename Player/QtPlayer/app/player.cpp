@@ -159,7 +159,6 @@ Player::Player(QWidget *parent)
 
 Player::~Player()
 {
-    if (m_timerId) { killTimer(m_timerId); m_timerId = 0; }
     if (m_seekDebounceTimerId) { killTimer(m_seekDebounceTimerId); m_seekDebounceTimerId = 0; }
 
     /*
@@ -384,48 +383,7 @@ void Player::playFile(const QString &path)
                               ,[](void* p){
         delete static_cast<CMD_OPEN_OBJ*>(p);
     });
-
     emit setPlayingText(path);
-    //这部分放到EVT_PREPARED,要等到处理好信息才设置否则读的就是上次的数据
-    // //ui->video->setPerfStartNs(startNs);
-    // this->showNormal();
-    // m_isInit = true;
-    // /*
-    //  * 流媒体：把快进/快退/逐帧/倍速/上下集这些入口整体关掉（按钮 + 快捷键 + 进度条），
-    //  * 换回本地视频时这里会重新判定并自动恢复。
-    //  */
-    // ui->ctrlbar->setStreamMode(m_playerCtx->getIsStreamMedia());
-    // if (m_playerCtx->getIsStreamMedia() && m_speed != 1.0) {
-    //     //倍速已经被 DemuxThread::openFile 强制拉回 1.0，标签也得跟着回到 1.0，
-    //     //否则界面写着 2.0x、实际按 1.0x 播，而倍速按钮又是灰的，用户无从判断。
-    //     m_speed = 1.0;
-    //     ui->ctrlbar->setSpeedLabel(m_speed);
-    // }
-    // // 重置滑块状态，避免之前操作的影响
-    // isSliderPress = false;                 // 清除按下标志
-    // // 换文件时丢弃上一次遗留的待生效 seek 与去抖定时器
-    // if (m_seekDebounceTimerId) {
-    //     killTimer(m_seekDebounceTimerId);
-    //     m_seekDebounceTimerId = 0;
-    // }
-    // m_pendingSeekMs = -1;
-    // ui->ctrlbar->setDisabled(false);
-    // setVolume(m_nowVolume);
-    // if (m_timerId)
-    //     killTimer(m_timerId);
-    // //用于进度条的计时器？
-    // m_timerId = startTimer(16);
-    // update();
-    // resizeEvent(nullptr);
-    // setPausePicture(m_playerCtx->getIsPause());
-    // if(!m_playerCtx->getIsPause()){
-    //     play();
-    // }else{
-    //     pause();
-    // }
-    // if (!m_playerCtx->getHasVideo()) {
-    //     ui->video->clearScreen();   // 纯音频：黑屏
-    // }
 }
 
 void Player::playNext()
@@ -482,7 +440,7 @@ void Player::queueSeekBy(long long deltaMs)
 {
     //流媒体不支持快进/快退（DemuxThread::requestSeekMs 里还有一道闸门兜底）
     //if(!m_isInit || dt.isStreamMedia() || dt.m_seekPauseing.load()) return;
-    if(!m_isInit || m_playerCtx->getIsStreamMedia() || m_playerCtx->getIsSeeking()) return;
+    if(!m_isInit || m_playerCtx->getIsStreamMedia() || m_playerCtx->getIsSeeking() || !m_canSeek) return;
 
     //逐帧中快进/快退：先退出逐帧（位置会对齐）
     exitStepFrame();
@@ -506,6 +464,7 @@ void Player::queueSeekBy(long long deltaMs)
         int tmp_arg1 = static_cast<int>(target>>32); //高32位
         int tmp_arg2 = static_cast<int>(target & 0xFFFFFFFF);//低32位
         m_playerCore->postMessage(PlayerCmd::CMD_SEEK,tmp_arg1,tmp_arg2);
+        m_canSeek = false;
     }else{
         //后续按键：只累积，等静默后再 seek 末次
         m_pendingSeekMs = target;
@@ -620,10 +579,6 @@ void Player::onEVT_PREPARED(PlayerMessage& msg)
         m_pendingSeekMs = -1;
         ui->ctrlbar->setDisabled(false);
         setVolume(m_nowVolume);
-        if (m_timerId)
-            killTimer(m_timerId);
-        //用于进度条的计时器？
-        m_timerId = startTimer(16);
         update();
         resizeEvent(nullptr);
         setPausePicture(m_playerCtx->getIsPause());
@@ -642,8 +597,8 @@ void Player::onEVT_PREPARED(PlayerMessage& msg)
 void Player::onEVT_POSITION(PlayerMessage &msg)
 {
     int ms = msg.arg1;
-    m_pts = msg.arg1;
     QMetaObject::invokeMethod(this,[this,ms](){
+        m_pts = ms;
         ui->ctrlbar->setSliderValue(ms);
     },Qt::QueuedConnection);
 }
@@ -681,6 +636,19 @@ void Player::onEVT_ERROR(PlayerMessage &msg)
     },Qt::QueuedConnection);
 }
 
+void Player::onSEEkDONE(PlayerMessage &msg)
+{
+    const uint64_t hi = static_cast<uint32_t>(msg.arg1);
+    const uint64_t lo = static_cast<uint32_t>(msg.arg2);
+    int64_t ms = static_cast<int64_t>((hi << 32) | lo);
+    QMetaObject::invokeMethod(this,[this,ms](){
+        ui->ctrlbar->setSliderValue(ms);
+        m_canSeek = true;
+    },Qt::QueuedConnection);
+    //打开按钮
+    onABLEBTN();
+}
+
 void Player::setEventCallback()
 {
     m_playerCore->setEventCallBack([this](PlayerMessage& msg){
@@ -716,7 +684,7 @@ void Player::setEventCallback()
             break;
         case EVT_SEEK_DONE:
             // arg1=实际落点ms（seek 可能不精确，要对齐关键帧）
-
+            onSEEkDONE(msg);
             break;
         case EVT_BUFFERING:
             // arg1=1 开始缓冲 / 0 结束（网络流才有意义）
@@ -825,15 +793,6 @@ void Player::timerEvent(QTimerEvent *e)
     if (isSliderPress)return;
     if (ui->ctrlbar->getSliderPress()) return ;
 
-    //！new 这个部分交给core 每隔100ms~200ms发一次刷新一次
-
-    // long long total = dt.totalMs;
-    // if (total > 0)
-    // {
-    //     //有待生效目标时，进度条显示目标（跟着按键走），而不是当前播放位置
-    //     const long long showMs = (m_pendingSeekMs >= 0) ? m_pendingSeekMs : dt.pts.load();
-    //     ui->ctrlbar->setSliderValue((int)showMs);
-    // }
 }
 
 void Player::closeEvent(QCloseEvent *e)

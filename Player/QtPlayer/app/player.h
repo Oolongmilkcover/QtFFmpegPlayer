@@ -123,6 +123,8 @@ private slots:
     void onABLEBTN();
 
     void onEVT_ERROR(PlayerMessage& msg);
+
+    void onSEEkDONE(PlayerMessage& msg);
 private:
     Ui::Player *ui;
 
@@ -140,6 +142,10 @@ private:
     PaintFrame m_videoCb;
     AudioPlayer* m_auPlayer;
 
+    //这个变量是为了处理短时间快速seek的导致的Core还未处理上次seek导致出现按键冲突
+    //发信息时置false，seekDone时置true
+    bool m_canSeek = true;
+
     bool m_isPause = false;
 
     bool isSliderPress = false;
@@ -147,7 +153,6 @@ private:
 
     bool m_isInit = false;
 
-    int m_timerId = 0;
 
     // —— 快进/快退去抖：短时间内连续按键只累积，停下来才真正 seek 一次 ——
     // 待生效的 seek 目标（毫秒），-1 表示当前没有待生效目标

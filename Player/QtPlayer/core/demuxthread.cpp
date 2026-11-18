@@ -811,7 +811,9 @@ void DemuxThread::doSeek()
         // player.cpp 的 queueSeekBy 开头会直接 return，快进/快退彻底失效。
         m_seekPauseing.store(false);
         setPause(wasPause);
-        m_msgQue->push(std::move(m_msgQue->getMsg(PlayerEvent::EVT_SEEK_DONE,seekMs)));
+        int tmp_arg1 = static_cast<int>(seekMs>>32); //高32位
+        int tmp_arg2 = static_cast<int>(seekMs & 0xFFFFFFFF);//低32位
+        m_msgQue->push(std::move(m_msgQue->getMsg(PlayerEvent::EVT_SEEK_DONE,tmp_arg1,tmp_arg2)));
         return ;
     }
 
@@ -862,8 +864,9 @@ void DemuxThread::doSeek()
             //m_isSeeking.store(false);    // seek 结束，清“进行中”标志
             m_msgQue->push(std::move(m_msgQue->getMsg(ContextChange::CTX_IS_SEEKING,0)));
             m_seekPauseing.store(false); // 早退也必须清，否则快进/快退会永久失效
+            //这里不能开启按钮，太快了，必须要等到SEEKDONE再开
             //emit ableBtn();
-            m_msgQue->push(std::move(m_msgQue->getMsg(PlayerEvent::EVT_ABLEBTN)));
+            //m_msgQue->push(std::move(m_msgQue->getMsg(PlayerEvent::EVT_ABLEBTN)));
             return;
         }
         avformat_flush(m_fmt_ctx);
@@ -914,8 +917,9 @@ void DemuxThread::doSeek()
     //m_isSeeking.store(false);
     m_msgQue->push(std::move(m_msgQue->getMsg(ContextChange::CTX_IS_SEEKING,0)));
 
+    //seek导致的关闭按钮统一给SEEKDONE打开
     //emit ableBtn();
-    m_msgQue->push(std::move(m_msgQue->getMsg(PlayerEvent::EVT_ABLEBTN)));
+    //m_msgQue->push(std::move(m_msgQue->getMsg(PlayerEvent::EVT_ABLEBTN)));
 
     //音频没有关键帧的概念 直接发送消息给ui改变进度条即可，视频得进一步找到具体ms
     int64_t realSeekMs = 0;
@@ -924,7 +928,9 @@ void DemuxThread::doSeek()
     }else{
         realSeekMs = realMs;
     }
-    m_msgQue->push(std::move(m_msgQue->getMsg(PlayerEvent::EVT_SEEK_DONE,realSeekMs)));
+    int tmp_arg1 = static_cast<int>(realSeekMs>>32); //高32位
+    int tmp_arg2 = static_cast<int>(realSeekMs & 0xFFFFFFFF);//低32位
+    m_msgQue->push(std::move(m_msgQue->getMsg(PlayerEvent::EVT_SEEK_DONE,tmp_arg1,tmp_arg2)));
 }
 
 void DemuxThread::doBackwardRefill()
