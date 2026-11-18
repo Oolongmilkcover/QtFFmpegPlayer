@@ -55,12 +55,12 @@ set(OP_APP_SOURCES
 )
 
 # core/      内核：队列、解封装、解码、时钟、同步线程。
-#            视频解码/渲染、音频都已改成 std::thread；DemuxThread 暂时仍是 QThread（它还有信号连着 app）。
+#            已完全脱离 Qt：没有 QObject / QThread / 信号槽，解码、渲染、音频都是 std::thread，
+#            日志走 core/log.h，音频输出经 IAudioOutput 接口（附 NullAudioPlayer 便于无设备/CI 测试）。
 set(OP_CORE_SOURCES
     core/perfclock.h
     core/frameconverter.h   core/frameconverter.cpp
     core/log.h
-    core/iaudiooutput.h
     core/iaudiooutput.h
     core/packetqueue.h      core/packetqueue.cpp
     core/framequeue.h       core/framequeue.cpp
