@@ -118,6 +118,13 @@ if(UNIX AND NOT APPLE)
     target_link_libraries(QtPlayer PRIVATE Threads::Threads)
 endif()
 
+# Windows：main.cpp 里用 timeBeginPeriod/timeEndPeriod 把进程时钟分辨率抬到 1ms
+# （demux / 音频线程依赖 1ms 精度的 sleep，默认 15.625ms 会把 demux 吞吐压到 ~64 包/秒）。
+# 这两个函数在 winmm.lib 里，必须显式链接。
+if(WIN32)
+    target_link_libraries(QtPlayer PRIVATE winmm)
+endif()
+
 # ============================ 最终化与安装 ============================
 set_target_properties(QtPlayer PROPERTIES
     WIN32_EXECUTABLE TRUE
