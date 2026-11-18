@@ -811,6 +811,14 @@ void DemuxThread::doSeek()
         // player.cpp 的 queueSeekBy 开头会直接 return，快进/快退彻底失效。
         m_seekPauseing.store(false);
         setPause(wasPause);
+        /*
+         * 这里必须补 CTX_IS_SEEKING=0：requestSeekMs() 发起 seek 时置过 1，
+         * 只有下面视频路径才会清。纯音频这条分支漏了它 → run() 每轮都认为
+         * "还在 seek"，反复进 doSeek()，既没有声音又白烧 CPU。
+         * （之前那句注释说的“清掉 seek 进行中”清的是 m_seekPauseing，那是 demux
+         *   内部标志，和 PlayerContext::isSeeking 不是一回事。）
+         */
+        m_msgQue->push(std::move(m_msgQue->getMsg(ContextChange::CTX_IS_SEEKING,0)));
         int tmp_arg1 = static_cast<int>(seekMs>>32); //高32位
         int tmp_arg2 = static_cast<int>(seekMs & 0xFFFFFFFF);//低32位
         m_msgQue->push(std::move(m_msgQue->getMsg(PlayerEvent::EVT_SEEK_DONE,tmp_arg1,tmp_arg2)));
@@ -867,6 +875,17 @@ void DemuxThread::doSeek()
             //这里不能开启按钮，太快了，必须要等到SEEKDONE再开
             //emit ableBtn();
             //m_msgQue->push(std::move(m_msgQue->getMsg(PlayerEvent::EVT_ABLEBTN)));
+            /*
+             * 早退也必须补一条 EVT_SEEK_DONE：UI 侧的 m_canSeek 靠它解锁。
+             * 约定是"每一个被受理的 seek 请求，有且只有一条 SEEK_DONE 回来"，
+             * 这里漏掉的话界面会一直认为 seek 还没结束（虽然有超时兜底，
+             * 但那是最后的保险，不该依赖它）。
+             */
+            {
+                int tmp_arg1 = static_cast<int>(seekMs>>32); //高32位
+                int tmp_arg2 = static_cast<int>(seekMs & 0xFFFFFFFF);//低32位
+                m_msgQue->push(std::move(m_msgQue->getMsg(PlayerEvent::EVT_SEEK_DONE,tmp_arg1,tmp_arg2)));
+            }
             return;
         }
         avformat_flush(m_fmt_ctx);

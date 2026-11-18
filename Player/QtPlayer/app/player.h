@@ -137,6 +137,15 @@ private:
     VideoWidget* m_widget;
     void setVideoPainterCb();
 
+    /*
+     * seek 的两个私有出口/工具（所有 seek 请求都必须走 postSeek，别再各处自己 postMessage）：
+     *   postSeek()     ：刷进度条 → 钉住目标 → 置 m_canSeek=false → 投递 CMD_SEEK；
+     *   pinSeekTarget()：只钉住显示，不投递（去抖累积期间用）。
+     * 这样"串行化"和"进度条钉住"只有一处实现，不会像之前那样尾部 seek 绕过 m_canSeek。
+     */
+    void postSeek(long long targetMs);
+    void pinSeekTarget(long long targetMs);
+
     // 视频帧渲染回调（std::function 本体，不是指针；
     // 传进 CMD_OPEN 时按值拷贝，Player 自己活得比它久）
     PaintFrame m_videoCb;
@@ -145,6 +154,9 @@ private:
     //这个变量是为了处理短时间快速seek的导致的Core还未处理上次seek导致出现按键冲突
     //发信息时置false，seekDone时置true
     bool m_canSeek = true;
+    //m_canSeek 的兜底截止时刻：万一本该来的 EVT_SEEK_DONE 丢了（比如 doSeek 早退），
+    //到点就自动解锁，绝不把快进/快退永久锁死。
+    qint64 m_canSeekUntilMs = 0;
 
     bool m_isPause = false;
 
@@ -159,6 +171,32 @@ private:
     long long m_pendingSeekMs = -1;
     // 去抖定时器 id（0 = 未启动）
     int m_seekDebounceTimerId = 0;
+
+    /*
+     * 进度条“钉在目标上”的状态（两者成对使用，m_seekTargetMs < 0 表示没在钉）。
+     *
+     * 用户刚发起 seek 时，进度条该显示“目标位置”；而 core 的 EVT_POSITION 约 150ms 一次、
+     * 报的是真实时钟，直接覆盖就会把握在手里的目标顶回去 —— 长按快进/快退时表现为
+     * 进度条在“目标”和“当前”之间来回跳。
+     *
+     * 解除条件（下一次 EVT_POSITION 时判）：
+     *   - 时钟已经走到目标附近（|当前 - 目标| <= kSeekLandToleranceMs）→ seek 已落地；
+     *   - 或者超过 m_seekUiHoldUntilMs（兜底，防止 SEEK_DONE 丢了把进度条永久冻住）。
+     * 用户不在连续操作时，onSEEkDONE() 收到落地事件会直接校正显示。
+     *
+     * m_seekTargetMs 同时还是“连按累积”的基准：连按期间 m_pts 追不上已经显示的目标，
+     * 下一次按键必须接着目标加，而不是接着旧时钟加。
+     */
+    long long m_seekTargetMs = -1;
+    qint64    m_seekUiHoldUntilMs = 0;
+
+    /*
+     * “用户正在连续 seek”的时间窗（截止时刻），每次快进/快退/拖动都刷新。
+     * 窗口内收到 EVT_SEEK_DONE 只更新内部位置，**不去改进度条**：
+     * 连按时进度条已经由按键驱动到目标上了，再被“精准落点”写一次就会出现
+     * “目标 → 落点 → 下一个目标”的来回抖。窗口结束后显示交给 EVT_POSITION 收敛。
+     */
+    qint64 m_seekActiveUntilMs = 0;
 
     bool m_isClosing = false;
 

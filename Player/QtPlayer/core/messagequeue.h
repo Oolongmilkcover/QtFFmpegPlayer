@@ -121,9 +121,15 @@ public:
         msg.obj  =obj;
         msg.free_l = std::move(free_l) ;
         if(msg.obj && !msg.free_l){
+            /*
+             * 走到这里说明调用方给了 obj 却没给 free_l —— 队列只知道有个指针，
+             * 不知道它是什么类型、是不是 new 出来的，所以这里**不能**释放它：
+             * `delete (void*)` 是未定义行为（MSVC 报 C4150，只会调 operator delete、
+             * 不调析构函数），对非 new 分配或非对象类型更是直接踩内存。
+             * 所以这里只把消息改写成错误消息让上层看得见，原 obj 原样留着
+             * （泄漏总比崩掉好，而且这条分支本身就应该由调用方修：补 free_l）。
+             */
             msg.what = EVT_ERROR;
-            //不知道怎么free旧的obj
-            delete msg.obj;
             msg.obj = new std::string("this message created failed");
             msg.free_l = [](void* p){
                 delete static_cast<std::string*>(p);

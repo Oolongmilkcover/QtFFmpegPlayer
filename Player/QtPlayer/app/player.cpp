@@ -16,6 +16,7 @@
 #include <QWindow>           // startSystemResize / startSystemMove
 #include <QInputDialog>
 #include <QDebug>
+#include <QDateTime>          // QDateTime::currentMSecsSinceEpoch：进度条"钉住"/m_canSeek 的截止时刻
 #include "platform/audioplayer.h"
 #include "platform/videowidget.h"
 extern "C" {
@@ -27,6 +28,31 @@ extern "C" {
 //配合“前沿”（这一串按键的第一次立即生效）实现 B 站式手感：
 //第一次按下马上有反馈，连按/长按只累积，静默 kSeekDebounceMs 后再补一次最终位置。
 static constexpr int kSeekDebounceMs = 120;
+
+//进度条“钉在目标上”的最长时间（毫秒）：seek 落地会提前解除，这个只是兜底，
+//防止 EVT_SEEK_DONE 丢了把进度条永久冻在目标上。
+static constexpr int kSeekUiHoldMs = 1500;
+//判定“seek 已经落地”的容差（毫秒）：真实时钟走到目标 ±这么多就算到位了。
+//取 1s：视频 seek 对齐关键帧可能偏一点点，1s 足够；而连按 5s 一档，不会误判成上一发的落点。
+static constexpr long long kSeekLandToleranceMs = 1000;
+//m_canSeek 的兜底：发出 seek 后最多锁这么久，到点自动解锁（SEEK_DONE 正常会提前解锁）。
+//取 2s：比一次普通本地 seek 慢不少，但又不至于让快进键按了没反应太久。
+static constexpr int kSeekLockTimeoutMs = 2000;
+//“用户正在连续 seek”的窗口（毫秒）：窗口内收到的 SEEK_DONE 不去改进度条。
+//取 1.2s：比一次按键间隔 + 一次 seek 落地的时间都长，手松开后自动退出该状态。
+static constexpr int kSeekActiveWindowMs = 1200;
+
+/*
+ * 诊断开关：设置环境变量 QTPLAYER_SEEK_DEBUG=1 时，把 seek / 进度条的关键数值
+ * 打到 Application Output（平时关闭，不影响正常运行）。
+ * 排查"进度条来回跳"这类问题时很有用：能看到每次按键用的 base、发出去的目标，
+ * 以及每次 EVT_POSITION 带来的时钟值。
+ */
+static bool seekDebugOn()
+{
+    static const bool on = qEnvironmentVariableIsSet("QTPLAYER_SEEK_DEBUG");
+    return on;
+}
 
 Player::Player(QWidget *parent)
     : QWidget(parent)
@@ -313,6 +339,12 @@ void Player::stopToPlay()
     if(!m_isInit) return;
     exitStepFrame();
     setPausePicture(true);
+    //停机：seek 相关状态一起复位，免得下次打开时快进/快退还锁着、进度条还钉着旧目标
+    m_pendingSeekMs     = -1;
+    m_seekTargetMs      = -1;
+    m_seekUiHoldUntilMs = 0;
+    m_canSeek           = true;
+    m_canSeekUntilMs    = 0;
     //dt.close();
     m_playerCore->postMessage(PlayerCmd::CMD_STOP);
     ui->video->clearScreen();
@@ -440,7 +472,11 @@ void Player::queueSeekBy(long long deltaMs)
 {
     //流媒体不支持快进/快退（DemuxThread::requestSeekMs 里还有一道闸门兜底）
     //if(!m_isInit || dt.isStreamMedia() || dt.m_seekPauseing.load()) return;
-    if(!m_isInit || m_playerCtx->getIsStreamMedia() || m_playerCtx->getIsSeeking() || !m_canSeek) return;
+    if(!m_isInit || m_playerCtx->getIsStreamMedia()) return;
+    //即使这一次因为“上一次 seek 还没落地”被丢弃，也要记下“用户还在连续操作”：
+    //否则窗口会过期，随后落地的 SEEK_DONE 就会去抢进度条，造成按键/落地两套值互相顶。
+    m_seekActiveUntilMs = QDateTime::currentMSecsSinceEpoch() + kSeekActiveWindowMs;
+    if(m_playerCtx->getIsSeeking() || !m_canSeek) return;
 
     //逐帧中快进/快退：先退出逐帧（位置会对齐）
     exitStepFrame();
@@ -448,31 +484,65 @@ void Player::queueSeekBy(long long deltaMs)
     const long long totalMs = m_durationMs;
     if(totalMs <= 0) return;   //时长未知，没法和范围对齐
 
-    //基准：有“已累积但还没生效”的目标就接着累积，否则取当前主时钟位置
-    const long long base = (m_pendingSeekMs >= 0) ? m_pendingSeekMs : m_pts;
+    //基准：有“已累积但还没生效”的目标就接着累积；否则若进度条还钉在某个目标上
+    //（seek 已发出但还没落地），也必须接着那个目标加 —— 这段窗口里 m_pts 还是旧时钟，
+    //拿它当基准会把连按的第二下算丢。
+    const long long base = (m_pendingSeekMs >= 0) ? m_pendingSeekMs
+                         : (m_seekTargetMs   >= 0) ? m_seekTargetMs
+                                                   : m_pts;
     long long target = base + deltaMs;
     if(target < 0) target = 0;
     if(target > totalMs) target = totalMs;
+
+    if (seekDebugOn())
+        qDebug() << "[seek] by" << deltaMs << "base" << base << "target" << target
+                 << "| pts" << (long long)m_pts << "pin" << m_seekTargetMs
+                 << "pending" << m_pendingSeekMs << "canSeek" << m_canSeek
+                 << "timer" << m_seekDebounceTimerId;
 
     //进度条 + 时间文字立刻跟到目标（setSliderValue 内部会同步 playSlider 和 playTimeEdit）
     ui->ctrlbar->setSliderValue((int)target);
 
     if(m_seekDebounceTimerId == 0){
-        //前沿：这一串按键的第一次立即生效
+        //前沿：这一串按键的第一次立即生效（postSeek 里会钉住目标并串行化）
         m_pendingSeekMs = -1;
-        //dt.seekToMs(target);
-        int tmp_arg1 = static_cast<int>(target>>32); //高32位
-        int tmp_arg2 = static_cast<int>(target & 0xFFFFFFFF);//低32位
-        m_playerCore->postMessage(PlayerCmd::CMD_SEEK,tmp_arg1,tmp_arg2);
-        m_canSeek = false;
+        postSeek(target);
     }else{
         //后续按键：只累积，等静默后再 seek 末次
         m_pendingSeekMs = target;
+        //显示先跟到目标（不发包），这样长按时进度条是一格一格往前走的
+        pinSeekTarget(target);
     }
 
     //尾部：每次按键都重置，静默 kSeekDebounceMs 后由 timerEvent 收尾
     if(m_seekDebounceTimerId) killTimer(m_seekDebounceTimerId);
     m_seekDebounceTimerId = startTimer(kSeekDebounceMs);
+}
+
+// 把进度条钉在目标上：从这一刻起到 seek 落地（或超时）之前，EVT_POSITION 不许改滑块。
+// 同时记住目标值，连按累积时要用它当基准（这段时间 m_pts 还是旧时钟）。
+void Player::pinSeekTarget(long long targetMs)
+{
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    m_seekTargetMs      = targetMs;
+    m_seekUiHoldUntilMs = now + kSeekUiHoldMs;
+    //用户刚刚操作过：把“连续 seek 窗口”推到未来，期间 SEEK_DONE 不许改进度条
+    m_seekActiveUntilMs = now + kSeekActiveWindowMs;
+}
+
+// 所有 seek 请求的唯一出口：显示目标 → 钉住 → 串行化 → 投递。
+// 之所以收在一处：以前前沿 / 去抖尾部 / 拖进度条三个地方各自 postMessage，
+// 尾部那条既没检查 m_canSeek 也没把它置 false，串行化形同虚设。
+void Player::postSeek(long long targetMs)
+{
+    ui->ctrlbar->setSliderValue((int)targetMs);
+    pinSeekTarget(targetMs);
+    m_canSeek        = false;
+    m_canSeekUntilMs = QDateTime::currentMSecsSinceEpoch() + kSeekLockTimeoutMs;
+
+    int tmp_arg1 = static_cast<int>(targetMs>>32); //高32位
+    int tmp_arg2 = static_cast<int>(targetMs & 0xFFFFFFFF);//低32位
+    m_playerCore->postMessage(PlayerCmd::CMD_SEEK,tmp_arg1,tmp_arg2);
 }
 
 
@@ -577,6 +647,11 @@ void Player::onEVT_PREPARED(PlayerMessage& msg)
             m_seekDebounceTimerId = 0;
         }
         m_pendingSeekMs = -1;
+        //换文件：上一次遗留的“进度条钉住”和 seek 锁也一起作废
+        m_seekTargetMs      = -1;
+        m_seekUiHoldUntilMs = 0;
+        m_canSeek           = true;
+        m_canSeekUntilMs    = 0;
         ui->ctrlbar->setDisabled(false);
         setVolume(m_nowVolume);
         update();
@@ -597,8 +672,28 @@ void Player::onEVT_PREPARED(PlayerMessage& msg)
 void Player::onEVT_POSITION(PlayerMessage &msg)
 {
     int ms = msg.arg1;
+    if (seekDebugOn()) qDebug() << "[seek] position" << ms;
     QMetaObject::invokeMethod(this,[this,ms](){
         m_pts = ms;
+        const qint64 now = QDateTime::currentMSecsSinceEpoch();
+
+        /*
+         * 进度条钉在目标上时（用户刚 seek / 连按快进快退），别让真实时钟把它顶回去。
+         * 解除条件二选一：
+         *   1) 时钟已经走到目标附近 → seek 落地了，可以交还给时钟；
+         *   2) 超过截止时间 → 兜底（SEEK_DONE 可能丢了），也交还，绝不永久冻结。
+         */
+        if (m_seekTargetMs >= 0) {
+            const long long diff = (long long)ms - m_seekTargetMs;
+            const bool   landed  = (diff < 0 ? -diff : diff) <= kSeekLandToleranceMs;
+            if (!landed && now < m_seekUiHoldUntilMs) return;   // 还在等落地：显示保持目标
+            m_seekTargetMs      = -1;
+            m_seekUiHoldUntilMs = 0;
+        }
+        //兜底：SEEK_DONE 迟迟不来（丢了 / doSeek 早退）时解开快进/快退的锁，
+        //否则 m_canSeek 会一直是 false，按键彻底没反应。
+        if (!m_canSeek && now >= m_canSeekUntilMs) m_canSeek = true;
+
         ui->ctrlbar->setSliderValue(ms);
     },Qt::QueuedConnection);
 }
@@ -641,9 +736,44 @@ void Player::onSEEkDONE(PlayerMessage &msg)
     const uint64_t hi = static_cast<uint32_t>(msg.arg1);
     const uint64_t lo = static_cast<uint32_t>(msg.arg2);
     int64_t ms = static_cast<int64_t>((hi << 32) | lo);
+    if (seekDebugOn()) qDebug() << "[seek] done" << ms << "pending" << m_pendingSeekMs;
     QMetaObject::invokeMethod(this,[this,ms](){
+        //落地：解除“禁止再发 seek”
+        m_canSeek           = true;
+        m_canSeekUntilMs    = 0;
+
+        //连按/拖动期间攒下的目标：上一次落地之后再补发，保证同一时刻只有一发在飞
+        if (m_pendingSeekMs >= 0) {
+            const long long target = m_pendingSeekMs;
+            m_pendingSeekMs = -1;
+            postSeek(target);      //内部会刷进度条 + 重新钉住
+            return;
+        }
+
+        const qint64 now = QDateTime::currentMSecsSinceEpoch();
+
+        //内部位置先校正：下一次按键取累积基准时用得上（EVT_POSITION 随后也会覆盖它）
+        m_pts = static_cast<long long>(ms);
+
+        /*
+         * 用户还在连续快进/快退（最近一次操作在 kSeekActiveWindowMs 之内）：
+         * 进度条此时由按键驱动、已经显示在目标上了，这里**不要再拿落点去改它**。
+         * 否则每按一下就会“目标 → 精准落点 → 下一个目标”写两次，看起来是抖的。
+         * 显示最终由 EVT_POSITION 收敛：时钟走到钉住的目标附近时自动接管（超时也会兜底）。
+         */
+        if (now < m_seekActiveUntilMs) {
+            if (seekDebugOn()) qDebug() << "[seek] done" << ms << "suppressed (user active)";
+            return;
+        }
+
+        /*
+         * 不在连续操作（单次 seek / 拖动松手后已静止）：把显示校正到真实落点。
+         * 注意不要把 m_seekTargetMs 直接清成 -1 —— 清掉的话下一次按键会回退到 m_pts，
+         * 而 m_pts 只在 EVT_POSITION 里更新，此刻可能还是 seek 之前的位置。
+         */
+        m_seekTargetMs      = static_cast<long long>(ms);
+        m_seekUiHoldUntilMs = now + kSeekUiHoldMs;
         ui->ctrlbar->setSliderValue(ms);
-        m_canSeek = true;
     },Qt::QueuedConnection);
     //打开按钮
     onABLEBTN();
@@ -765,9 +895,15 @@ void Player::sliderSeek(double pos)
     // ui->video->m_needNsDiff.store(true);
     // //-----------
     long long ms = m_durationMs*pos;
-    int tmp_arg1 = static_cast<int>(ms>>32); //高32位
-    int tmp_arg2 = static_cast<int>(ms & 0xFFFFFFFF);//低32位
-    m_playerCore->postMessage(PlayerCmd::CMD_SEEK,tmp_arg1,tmp_arg2);
+    if (m_canSeek) {
+        postSeek(ms);          //内部会刷进度条 + 钉住目标 + 串行化
+    } else {
+        //上一次 seek 还没落地：先记下来，等 onSEEkDONE 补发。
+        //不在这里硬发第二个 —— 两个 seek 同时在飞，落地顺序会乱、进度条会来回跳。
+        m_pendingSeekMs = ms;
+        ui->ctrlbar->setSliderValue((int)ms);
+        pinSeekTarget(ms);
+    }
 }
 
 void Player::timerEvent(QTimerEvent *e)
@@ -783,9 +919,13 @@ void Player::timerEvent(QTimerEvent *e)
         //否则会在拖动过程中先跳一次（随后松手又会按拖动位置再跳一次）
         if (ui->ctrlbar->getSliderPress()) return;
         if (target >= 0){
-            int tmp_arg1 = static_cast<int>(target>>32); //高32位
-            int tmp_arg2 = static_cast<int>(target & 0xFFFFFFFF);//低32位
-            m_playerCore->postMessage(PlayerCmd::CMD_SEEK,tmp_arg1,tmp_arg2);
+            if (m_canSeek) {
+                postSeek(target);
+            } else {
+                //上一次 seek 还没落地：留着，等 onSEEkDONE 再补发。
+                //（以前这里直接 postMessage，既没检查 m_canSeek 也没置位，串行化在这里是漏的。）
+                m_pendingSeekMs = target;
+            }
         };
         return;
     }
