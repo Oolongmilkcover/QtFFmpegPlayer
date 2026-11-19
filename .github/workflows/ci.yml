@@ -23,8 +23,9 @@ jobs:
             libswresample-dev libswscale-dev libavfilter-dev libavdevice-dev
 
       # Linux 分支走 pkg-config 找 FFmpeg（见 CMakeLists 的 if(WIN32)/else()）
+      # 单测默认不构建（本仓库只修 bug），CI 里显式打开，保住 FrameQueue 的回归网
       - name: 配置
-        run: cmake -S Player/QtPlayer -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+        run: cmake -S Player/QtPlayer -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DOP_BUILD_TESTS=ON
 
       - name: 构建（含 GUI 主程序 + 测试目标）
         run: cmake --build build -j"$(nproc)"

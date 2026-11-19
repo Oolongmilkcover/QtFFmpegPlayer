@@ -81,24 +81,57 @@ set(OP_PLATFORM_SOURCES
     platform/videowidget.h  platform/videowidget.cpp
 )
 
+# ============================ 内核静态库 ============================
+# core/ 单独编成一个静态库：
+#   - QtPlayer 链它（不再是"源文件直接塞进 exe"）；
+#   - 单测链它（这样测的就是真正会被产品用到的同一份代码）；
+#   - 以后把 core 抽成独立 SDK 仓库时，直接连这个 target 一起搬走。
+# 约束：core 零 Qt —— 下面**不允许**出现任何 Qt6::* 依赖。
+add_library(op_core STATIC ${OP_CORE_SOURCES})
+
+# 源码里的 include 一律写 "core/xxx.h"，所以把源码根目录公开出去。
+# PUBLIC 的含义：任何链了 op_core 的目标都自动获得这个头文件搜索路径。
+# （GCC/Clang 只搜"当前头文件所在目录 + -I 路径"，不公开这条 Linux 上必报
+#   ui_player.h:19: fatal error: app/ctrlbar.h: No such file or directory）
+target_include_directories(op_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+
+# FFmpeg 是 core 的**公开**依赖：core 的公开头文件里就会出现 libav* 类型，
+# 所以必须 PUBLIC 传播，否则链 op_core 的目标编译时报"找不到 avformat.h"。
+target_link_libraries(op_core PUBLIC ffmpeg_deps)
+
+# std::thread 需要线程库：Windows/MSVC 自带，Linux 要显式链
+if (UNIX)
+    find_package(Threads REQUIRED)
+    target_link_libraries(op_core PUBLIC Threads::Threads)
+endif ()
+
+# 关掉这个 target 的 Qt 代码生成：core 零 Qt，不应该有 moc/uic/rcc。
+# 意义不只是"少一步"—— 万一以后有人手滑往 core 里加了 Q_OBJECT，
+# 这里会直接编不过，而不是"悄悄被 moc 处理掉、然后在 Linux/NDK 上炸"。
+set_target_properties(op_core PROPERTIES
+    AUTOMOC OFF
+    AUTOUIC OFF
+    AUTORCC OFF
+)
+
 # ============================ 播放器可执行文件 ============================
 qt_add_executable(QtPlayer
     MANUAL_FINALIZATION
     ${OP_APP_SOURCES}
-    ${OP_CORE_SOURCES}
     ${OP_PLATFORM_SOURCES}
     resources/res.qrc
 )
 
 # ============================ 链接库 ============================
 target_link_libraries(QtPlayer PRIVATE
+    op_core                 # 内核
     Qt6::Core
     Qt6::Gui
     Qt6::Widgets
     Qt6::Multimedia
     Qt6::OpenGL
     Qt6::OpenGLWidgets
-    ffmpeg_deps
+    ffmpeg_deps             # app/ 与 platform/ 自己也直接用 FFmpeg（op_core 已 PUBLIC 传了一份）
 )
 
 # ==================== 把仓库根目录加入 include 路径 ====================
@@ -142,12 +175,18 @@ install(TARGETS QtPlayer
 
 qt_finalize_executable(QtPlayer)
 
-# ============================ 单元测试（无桌面也能跑） ============================
-# 只依赖 Qt6::Core + FFmpeg，不创建任何窗口 / QApplication，
-# 所以可以在 headless 环境（CI、无桌面虚拟机）直接执行：
+# ============================ 单元测试（默认不构建） ============================
+# tests/test_framequeue.cpp 是逐帧状态机的回归测试：不建窗口、不建 QApplication、
+# 也不链 Qt（只链 op_core），所以能在 headless 环境（CI、无桌面虚拟机）直接跑。
+#
+# 本仓库的定位是"Qt 播放器 + 推流器，只修 bug"，单测默认**不构建**；
+# 需要时显式打开（CI 里就是打开的，保证 FrameQueue 还有回归网）：
+#     cmake -S Player/QtPlayer -B build -DOP_BUILD_TESTS=ON
 #     cmake --build build && ctest --test-dir build --output-on-failure
+# 等 core 迁到 SDK 仓库后，这个测试会跟着过去。
+option(OP_BUILD_TESTS "构建 core 的单测（默认关）" OFF)
 include(CTest)
-if(BUILD_TESTING)
+if(OP_BUILD_TESTS)
     add_subdirectory(tests)
 endif()
 
