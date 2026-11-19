@@ -1,49 +1,67 @@
-# QtPlayer · 基于 Qt 6 + FFmpeg 的多线程音视频播放器
+# QtPlayer · 基于 Qt 6 + FFmpeg 的播放器与推流器
 
-> 我把这个桌面播放器从零写了一遍：没用 QMediaPlayer 那类成品链路，而是直接用 FFmpeg API 做
-> 解封装 / 解码 / 音画同步 / OpenGL 渲染 / 音频输出，Qt 只负责界面和窗口。
+> 没用 `QMediaPlayer` 这类成品链路：解封装 / 解码 / 音画同步 / OpenGL 渲染 / 音频输出全部直接基于
+> **FFmpeg API** 手写，Qt 只负责界面和窗口。
+>
+> 仓库里有两个可执行程序和一个内核库：**播放器 `QtPlayer`**、**推流器 `op_pusher`**（mini-OBS）、
+> **内核 `op_core`**（静态库，零 Qt 依赖）。
 
 | 项 | 内容 |
 |---|---|
 | 语言 | C++17 |
 | 界面 | Qt 6.11（Widgets / Multimedia / OpenGL / OpenGLWidgets） |
-| 媒体 | FFmpeg 8.1（avformat / avcodec / avutil / swresample / swscale / avfilter） |
+| 媒体 | FFmpeg 8.1（avformat / avcodec / avutil / swresample / swscale / avfilter / avdevice） |
 | 渲染 | QOpenGLWidget + GLSL（YUV420P 三平面纹理，零拷贝上传） |
-| 构建 | CMake ≥ 3.16，MSVC 2022 验证通过（代码里没有 Win32 API） |
-| 平台 | 目前只在 Windows 上验证；架构上给跨平台留了口子 |
+| 构建 | CMake ≥ 3.21 + Ninja；MSVC 2022 验证通过，Ubuntu 24.04 由 CI 构建 |
+| 平台 | Windows（主力）、Linux（构建 + 单测跑通，GUI 有已知崩溃）、鸿蒙/安卓在路线图上 |
 
 ---
 
 ## 目录
 
-- [1. 项目简介](#1-项目简介)
-- [2. 功能特性](#2-功能特性)
-- [3. 快速开始](#3-快速开始)
-- [4. 架构设计](#4-架构设计)
-- [5. 关键机制](#5-关键机制)
+- [1. 项目定位](#1-项目定位)
+- [2. 构建目标](#2-构建目标)
+- [3. 功能特性](#3-功能特性)
+- [4. 快速开始](#4-快速开始)
+- [5. 架构](#5-架构)
 - [6. 目录结构](#6-目录结构)
 - [7. 关键常量](#7-关键常量)
 - [8. 性能数据](#8-性能数据)
 - [9. 已知限制](#9-已知限制)
-- [10. 参考资料与延伸阅读](#10-参考资料与延伸阅读)
-- [开发问题与解决方案](docs/problems-and-solutions.md)
+- [10. 文档与参考](#10-文档与参考)
 
 ---
 
-## 1. 项目简介
+## 1. 项目定位
 
-我没用 QMediaPlayer 这类成品链路，而是直接基于 **FFmpeg API** 把解封装 / 解码 / 同步 / 渲染 / 音频输出
-整条流程写了一遍，Qt 只负责界面和窗口系统。
+**本仓库 = Qt 播放器 + 推流器。** 内核 `core/` 已经完成"零 Qt"改造（见下面的分层），
+并且已经从源码清单提升为独立的静态库 `op_core`；它接下来会**迁出到单独的仓库做 SDK 化**
+（C 接口 + 鸿蒙/安卓移植），本仓库此后只修 bug。
 
-动手前给自己定了三条原则：
+| 本仓库负责 | 不负责（在 SDK 仓库） |
+|---|---|
+| `app/`：窗口、控制栏、标题栏、播放列表、滑条 | 对外 C 接口（`include/op/op_player.h`） |
+| `platform/`：`QAudioSink` 音频输出、`QOpenGLWidget` 渲染目标 | 平台后端（鸿蒙 NAPI / 安卓 JNI） |
+| `pusher/`：采集 → 编码 → 封装 → 推流 | 打包成 `.har` / `.aar` 给第三方 |
 
-1. **分层要清楚**：解封装、解码、渲染、音频输出各跑各的线程，中间用有界队列连起来；
-2. **关键策略握在自己手里**：同步、丢帧、队列深度、历史深度、缓存上限都显式可调，不依赖库的黑盒行为；
-3. **并发要能推理**：跨线程的状态只允许"归属明确的队列"和原子量两种，锁的粒度和顺序都写了注释约束。
+> 分叉约定、回落流程、迁出清单见 [`docs/CORE-FORK.md`](docs/CORE-FORK.md)。
 
 ---
 
-## 2. 功能特性
+## 2. 构建目标
+
+| 目标 | 类型 | 链接 Qt | 说明 |
+|---|---|---|---|
+| `op_core` | 静态库 | **否** | 解封装、解码、帧队列、音画同步、消息队列。`AUTOMOC/AUTOUIC/AUTORCC` 全关，编译参数里没有任何 Qt 路径 |
+| `QtPlayer` | GUI 可执行 | 是 | 播放器本体：`app/` + `platform/` + `op_core` |
+| `op_pusher` | Console 可执行 | **否** | mini-OBS：采集 → H.264/AAC → mp4 / RTMP，零 Qt（dumpbin 里不会出现任何 `Qt6*.dll`） |
+
+`op_core` 是"零 Qt 内核"的**客观证据**，不是靠 grep 说的：它的编译命令里只有源码根目录和 FFmpeg 头。
+以后谁不小心往 `core/` 里加了 `Q_OBJECT`，会**直接编不过**，而不是被 moc 悄悄处理掉、再在 Linux/NDK 上炸。
+
+---
+
+## 3. 功能特性
 
 ![主界面与按键说明](pictures/OPlayer界面.png)
 
@@ -57,13 +75,15 @@
 | 播放 | 拖拽文件 | 拖入即播放并加入列表 |
 | 逐帧 | 下一帧 / 上一帧 | 暂停渲染、解码继续；**上一帧支持无限回退**（历史窗口 + 自动 seek 回填） |
 | 画面 | OpenGL YUV 渲染 | YUV420P 三平面纹理 + GLSL，零拷贝上传 |
+| 画面 | 像素格式统一 | 解码后统一过 `FrameConverter` 转成 YUV420P，NV12 / 10bit / 全范围片源不会花屏 |
 | 画面 | 滤镜 | 原色 / 灰度 / 反色 / 暖色 / 冷色（Shader uniform 切换） |
 | 画面 | 全屏 / 无边框窗口 | 双击全屏、Esc 退出；自绘标题栏与边缘缩放 |
 | 音频 | 音量调节 | 0–100，静音图标联动 |
-| 音频 | 纯音频文件 | 自动黑屏，并关闭逐帧能力 |
-| 输入 | 键盘快捷键 | 见下方表格 |
-| 网络 | RTSP 参数 | `rtsp_transport=tcp` + `max_delay`，并支持中断回调安全退出 |
-| 平台 | Windows / Ubuntu 24.04 | 两边都已构建并跑通；Linux 的构建参数见 3.2，已知问题见 3.4 |
+| 音频 | 纯音频文件 | 自动黑屏，并**禁用逐帧入口**（没有帧可逐） |
+| 网络 | 流媒体播放 | RTSP / RTMP / HTTP 等；`rtsp_transport=tcp` + 中断回调保证能随时退出 |
+| 网络 | 流媒体模式降级 | 直播流禁止 seek / 逐帧 / 倍速（进度条与相关按钮整体置灰） |
+| 输入 | 键盘快捷键 | 见下表 |
+| 推流 | `op_pusher` | 摄像头/麦克风采集 → 编码 → mp4 或 RTMP，带断线重连与统计 |
 
 **快捷键**
 
@@ -76,216 +96,137 @@
 
 ---
 
-## 3. 快速开始
+## 4. 快速开始
 
-### 3.1 依赖
+### 4.1 依赖
 
-- Qt 6.x（需 **Core / Gui / Widgets / Multimedia / OpenGL / OpenGLWidgets**）
-- FFmpeg 开发包（含 `include/` 与 `lib/`，我用 8.1 验证）
-- CMake ≥ 3.16，编译器需支持 C++17
+- **Qt 6**（`Core` `Gui` `Widgets` `Multimedia` `OpenGL` `OpenGLWidgets`）；开发验证版本 6.11.3
+- **FFmpeg 8.x** shared build（`include/` + `lib/` + `bin/`），需要 `avformat avcodec avdevice avutil swresample swscale avfilter`
+- **CMake ≥ 3.21**、**Ninja**（或任何 CMake 生成器）、MSVC 2022 / GCC 11+
 
-### 3.2 构建
+### 4.2 Windows（MSVC）
 
 ```bash
-# 1) 配置（FFMPEG_PATH 有默认值，路径不同就用 -D 覆盖；Qt 用 CMAKE_PREFIX_PATH 指定）
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
-      -DCMAKE_PREFIX_PATH="C:/Qt/6.11.0/msvc2022_64" \
+# 1) 配置：FFMPEG_PATH 默认是 C:/Program Files/ffmpeg/ffmpeg8.1，装别处就用 -D 覆盖
+cmake -S Player/QtPlayer -B build -G Ninja \
+      -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_PREFIX_PATH="C:/Qt/6.11.3/msvc2022_64" \
       -DFFMPEG_PATH="C:/Program Files/ffmpeg/ffmpeg8.1"
 
-# 2) 编译
-cmake --build build --config Release
+# 2) 编译（op_core / QtPlayer / op_pusher 三个目标一起出来）
+cmake --build build
 
-# 3) 运行
-./build/Release/QtPlayer.exe     # Linux / macOS 下是 ./build/QtPlayer
+# 3) 运行：把 FFmpeg 的 bin 加进 PATH，否则起不来（找不到 avcodec-*.dll）
+set PATH=C:\Program Files\ffmpeg\ffmpeg8.1\bin;%PATH%
+build\QtPlayer.exe
 ```
 
-Linux（Ubuntu 24.04）等价流程：
+### 4.3 Linux（Ubuntu 24.04，CI 里跑的也是这套）
 
 ```bash
-sudo apt install -y build-essential cmake ninja-build libavcodec-dev libavformat-dev \
-     libavutil-dev libswscale-dev libswresample-dev libavfilter-dev
+sudo apt-get install -y build-essential cmake ninja-build pkg-config \
+    qt6-base-dev qt6-multimedia-dev libgl1-mesa-dev \
+    libavcodec-dev libavformat-dev libavutil-dev \
+    libswresample-dev libswscale-dev libavfilter-dev libavdevice-dev
 
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
-      -DCMAKE_PREFIX_PATH=/home/lcy/Qt/6.11.2/gcc_64/lib/cmake/Qt6   # ← 必须指向要跑的那份 Qt
-cmake --build build -j
+cmake -S Player/QtPlayer -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build
 ./build/QtPlayer
 ```
 
-> **别指向系统 Qt**（`-DCMAKE_PREFIX_PATH=/usr/lib/qt6`）。系统 Qt 与自装 Qt 的版本、平台插件、
-> 渲染后端都不一样，混用会出现"代码看着没问题、行为就是不对"，而且报错不会指向真正的方向 ——
-> 我就是这么栽的，排查过程记在问题文档第 22 条。
+Linux 分支用 `pkg-config` 找 FFmpeg（`cmake/FFmpeg.cmake` 里按 `if(WIN32)/else()` 分开写），
+所以**不需要** `-DFFMPEG_PATH`。GUI 侧在 Linux 上有一个已知崩溃，见 [9. 已知限制](#9-已知限制)。
 
-### 3.3 打包给别人用（免安装绿色版）
-
-程序用的是 shared 版 FFmpeg，**单独把 exe 拷走是跑不起来的**，必须把 Qt 与 FFmpeg 的运行库一起带上。
-仓库里的 `scripts/build-release.ps1` 一步完成「Release 构建 → `windeployqt` 收集 Qt 依赖 → 拷 FFmpeg 运行库 → 压 zip」：
-
-```powershell
-# 默认输出 dist\QtPlayer-v2.0-win64\ 并生成同名 zip
-powershell -ExecutionPolicy Bypass -File scripts\build-release.ps1
-
-# 只探测路径与体积预估，不做任何构建
-powershell -ExecutionPolicy Bypass -File scripts\build-release.ps1 -DryRun
-
-# 显式指定 Qt / FFmpeg / 版本号
-powershell -ExecutionPolicy Bypass -File scripts\build-release.ps1 `
-    -QtDir C:\Qt\6.11.0\msvc2022_64 `
-    -FfmpegPath "C:\Program Files\ffmpeg\ffmpeg8.1" `
-    -Version v2.0
-```
-
-跑完直接双击 `dist\QtPlayer-v2.0-win64\QtPlayer.exe` 自测。
-
-> 实测约 **250 MB**，其中 220 MB 是 FFmpeg 的 DLL
-> （`avcodec-62.dll` 93 MB、`avfilter-11.dll` 90 MB）。二进制无法增量存储，每次重新构建都会往历史里
-> 塞几百 MB 且永远删不掉；这两个文件也已逼近 GitHub 单文件 100 MB 的硬上限。
-> 分发请走 **GitHub Release 附件**：新建 Release → 上传 zip → 用户解压双击即用。
-
-手动打包等价于：
+### 4.4 运行推流器
 
 ```bash
-windeployqt --release --no-translations --compiler-runtime QtPlayer.exe
-# 再把 FFmpeg bin 目录下的动态库拷到 exe 同级：
-#   avcodec-*.dll  avformat-*.dll  avutil-*.dll  swresample-*.dll  swscale-*.dll  avfilter-*.dll
+# 没有摄像头也能跑：--testsrc 合成视频 + sine 合成音频，直接落盘
+build\op_pusher.exe --testsrc --audio-input-format sine -o out.mp4 --duration 10
+
+# 真实设备 → RTMP
+build\op_pusher.exe --video "video=USB Camera" -a "audio=麦克风" ^
+                    --bitrate 4000000 --gop 60 ^
+                    --url rtmp://127.0.0.1/live/demo --reconnect-attempts 10
+
+build\op_pusher.exe --help      # 完整参数
+build\op_pusher.exe --list-devices
 ```
 
-### 3.4 Linux 支持（Ubuntu 24.04，已跑通）
+### 4.5 打包绿色版（免安装）
 
-- **状态**：Windows 与 Ubuntu 24.04 都能构建、运行、播放；逐帧 / seek / 滤镜在 Linux 上回归过一轮。
-- **无桌面环境（CI / 无桌面 VM）**：单测走 offscreen 平台，不需要 X / Wayland：
+```powershell
+# 默认输出 dist\QtPlayer-<版本>-win64\ 并生成同名 zip
+.\scripts\build-release.ps1
 
-  ```bash
-  QT_QPA_PLATFORM=offscreen ctest --test-dir build --output-on-failure
-  ```
+.\scripts\build-release.ps1 -DryRun                  # 只探测路径与体积，不构建
+.\scripts\build-release.ps1 -Version v3.1 -QtDir C:\Qt\6.11.3\msvc2022_64
+```
 
-- **已知问题**：
-  1. 偶发**打开文件时崩溃**（SIGSEGV），栈落在 QtMultimedia 的音频端点
-     （`QPlatformAudioEndpointBase::updateStreamIdle` ← `QObject::event` ← `sendPostedEvents`），
-     不在视频 / GL 那条路上。**暂时搁置**：等 `core` 抽出来、音频换成自己的 `IAudioSink` 再处理。
-  2. Linux 侧还没有性能数据（§8 的数据都是 Windows 采的）。
-- **踩坑记录**：工具链、平台约定、以及那个"不是代码问题"的问题，都记在
-  [开发问题与解决方案](docs/problems-and-solutions.md) 第 18 ~ 23 条。
+脚本会做：Release 构建 → `windeployqt` 收 Qt 依赖 → 拷 FFmpeg 的 `avcodec-*.dll` 等 →
+补 MSVC 运行库 → 打 zip。`dist/` 不入库。
+
+### 4.6 单元测试（默认**不**构建）
+
+`tests/test_framequeue.cpp` 是逐帧状态机的回归测试（headless、不建窗口、不链 Qt）。
+本仓库的定位是"播放器 + 推流器，只修 bug"，所以**默认不构建它**；需要时显式打开：
+
+```bash
+cmake -S Player/QtPlayer -B build -G Ninja -DOP_BUILD_TESTS=ON
+cmake --build build
+ctest --test-dir build -C Debug --output-on-failure
+```
+
+CI 里是打开的（`.github/workflows/ci.yml`）。等内核迁到 SDK 仓库后，这个测试会跟着过去。
 
 ---
 
-## 4. 架构设计
+## 5. 架构
 
-### 4.1 线程模型
+### 5.1 分层
 
-![线程与数据流模型](pictures/OPlayer模型.png)
-
-- **DemuxThread**：唯一持有 `AVFormatContext`，负责读包、分发、seek、逐帧回填；
-- **VideoDecodeThread**：唯一持有视频 `AVCodecContext`，解码后写进未来帧队列；
-- **VideoRenderThread**：唯一消费未来帧队列和历史帧队列，负责节奏控制、丢帧、逐帧步进；
-- **AudioThread**：内部两个线程（解码 + 播放），同时向视频侧提供音频时钟。
-
-### 4.2 三类缓冲
-
-| 缓冲 | 实现 | 容量 | 作用 |
+| 层 | 目录 | 依赖 | 职责 |
 |---|---|---|---|
-| 包队列 `PacketQueue` | `std::queue` + mutex/cond | ≥ 100 包 | 解复用与解码解耦；支持**带超时投递**与中止唤醒 |
-| 未来帧队列 | 预分配**环形数组** | 16 帧 | 已解码未显示的帧；生产者=解码线程，消费者=渲染线程 |
-| 历史帧队列 | `std::deque` + 光标下标 | 48 帧 | 已显示过的帧；逐帧回退用，耗尽时触发 seek 回填 |
+| 内核 | `core/` | 标准库 + FFmpeg（**零 Qt**） | 队列、解封装、解码、渲染节奏、音频解码、同步、消息循环 |
+| 平台 | `platform/` | Qt Multimedia / OpenGL | 音频设备（`IAudioOutput` 实现）、渲染目标（`QOpenGLWidget`） |
+| 壳 | `app/` | Qt Widgets | 窗口、控件、输入、播放列表 |
+| 推送 | `pusher/` | 标准库 + FFmpeg（零 Qt） | 另一条独立链路，与播放器互不依赖 |
 
-> 为什么未来队列用环形、历史用 deque：我在 [开发问题与解决方案](docs/problems-and-solutions.md) 第 10 条里写过。
-> 简单说，v1.0 我照 ffplay 的 `frame_queue` 做过 `keep_last / rindex_shown`，但它只能回退一帧，做不了"伪无限上一帧"。
+### 5.2 线程与消息
 
-### 4.3 一次正常播放的数据流
-
-1. `DemuxThread::run()` 读到一个 `AVPacket`，按 `stream_index` 投递到视频 / 音频包队列；
-2. 解码线程 `pop` 到包 → `avcodec_send_packet` → 循环 `avcodec_receive_frame`；
-3. 解码帧把时间戳统一换算成**毫秒**后写入未来帧队列（`push()`）；
-4. 渲染线程取帧，和音频时钟比较后决定"立刻显示 / 睡一会儿 / 丢帧"；
-5. 帧被消费时进入历史队列（`next()`），同时克隆一份投递给 GUI 线程；
-6. GUI 线程 `setPaint()` 只接管引用，`paintGL()` 直接从 `AVFrame` 上传纹理并绘制。
-
----
-
-## 5. 关键机制
-
-### 5.1 背压与限速
-
-- 队列一律**有界**，容量写死（16 帧 / 100 包），满了生产者就等——这是我唯一的限速点；
-- 但我不允许**控制线程**被数据堵住：包投递用 `push(pkt, serial, timeoutMs)` / `tryPush(...)`，
-  **超时就返回 false**，把包暂存到 `m_pendingPkt`，下一轮先重试它。这样 demux 线程每轮最多阻塞 10ms，
-  随时能响应 **seek / 逐帧回填 / 退出**；
-- 我在 [开发问题与解决方案](docs/problems-and-solutions.md) 第 2、8 条里记了这两个教训的来龙去脉。
-
-### 5.2 音视频同步（音频主时钟）
-
-```
-diff = videoPts - audioPts          // 单位 ms
-SYNC_THRESHOLD = 30
+```text
+              ┌─────────────── app/（GUI 线程）───────────────┐
+              │  Player：窗口 / 控件 / 输入 / 播放列表        │
+              └───────▲────────────────────────────┬─────────┘
+                      │ EVT_*（事件回调，队列投递） │ CMD_*（postMessage）
+              ┌───────┴────────────────────────────▼─────────┐
+              │ PlayerCore：MessageQueue + 消息循环线程       │
+              └───────▲────────────────────────────┬─────────┘
+                      │ CTX_*（状态广播，给 UI 展示）│ 指令
+   ┌──────────────────┴───────┐        ┌───────────▼──────────────┐
+   │ DemuxThread（读包/seek） │        │ AudioThread（解码+输出） │
+   └───┬──────────────┬───────┘        └───────────┬──────────────┘
+       │ 包队列        │ 包队列                     │
+ ┌─────▼─────┐  ┌─────▼──────────┐          ┌──────▼───────┐
+ │ 视频解码  │  │ 音频解码       │          │ QAudioSink   │
+ └─────┬─────┘  └────────────────┘          └──────────────┘
+       │ 帧队列（未来 16 + 历史 48）
+ ┌─────▼──────────────┐
+ │ VideoRenderThread  │──► paint 回调 ──► GUI 线程（在飞帧数 = 1）
+ └────────────────────┘
 ```
 
-| 情况 | 我采取的策略 |
-|---|---|
-| `diff > 30`（视频超前） | 显示当前帧后多睡 `(diff-30)/2`，上限一帧时长（慢慢补偿，不跳变） |
-| `\|diff\| ≤ 30` | 正常节奏：睡到 `now + 帧时长 − 渲染耗时` |
-| `diff < -30`（视频落后） | **直接丢帧**（`next()` 不渲染）追上音频 |
-| 无音频 / 音频已结束 | 视频做主时钟，按**相邻帧 pts 差**定节奏 |
+### 5.3 三条硬约定
 
-几个细节：
+这三条是 core 化那一轮用血换来的（详见问题文档 24~33），改代码时别破坏：
 
-- 音频时钟取的是"**真实听到的位置**"：最近写入声卡帧的 pts 减去声卡未播时长
-  （`QAudioSink::bufferSize() - bytesFree()` 换算），而不是"解码到哪了"；
-- 倍速时内容时间轴和播放时间轴会分离，时钟换算要乘上当前速度（`atempo` 的输出按样本数重映射回内容 pts）；
-- 播放末尾有尾帧阶段（`lastSome`）和播完标志（`playDone`）收尾，见问题文档第 7 条。
-
-### 5.3 Seek（异步 + serial 版本号）
-
-```
-[GUI]  拖动进度条 → requestSeekMs(ms)：夹取范围、serial++、置 m_isSeeking、禁用按钮，然后立刻返回
-[DMA]  run() 首判 m_isSeeking → doSeek()：
-         暂停生产 → 清空包队列/帧队列 → avformat_flush
-         → av_seek_frame(..., AVSEEK_FLAG_BACKWARD)   // 只能定位到关键帧
-         → avcodec_flush_buffers
-         → 读包 + 解码，直到第一帧 pts >= 目标 → 直接显示（repaintPts）
-         → 把新 serial 同步给解码/渲染/音频线程，并复位重采样器与 atempo 滤镜
-         → 恢复暂停状态、重新启用按钮
-```
-
-几个关键点：
-
-- **serial 机制**：每次 seek 递增 `m_serial`，包和帧都带着 serial，消费端丢掉过期数据，
-  这样 seek 后不会有旧帧残留；
-- **帧级精确**：定位阶段必须**完整解码**，不能为了快跳过非参考帧；渲染线程记录的也是"**实际显示那一帧**"的 pts；
-- **控制线程不阻塞**：见 5.1。
-
-### 5.4 逐帧与无限回退
-
-```
-进入逐帧：只暂停"渲染"（解码继续跑）+ 暂停音频；记住进入前的暂停状态
-下一帧  ：优先取历史里"已解码但还没显示到"的帧，其次消费未来帧队列
-上一帧  ：光标在历史里往回走
-到边界  ：请求 demux 向后 seek 一段 → 完整解码 → 只收集"严格早于边界"的帧 → 前插进历史
-退出逐帧：按需 seek 回到当前显示帧（有音频时必须对齐，否则音画会错位）
-```
-
-- 历史容量 48 帧，单次回填最多保留 16 帧（`kRefillKeepFrames`）；
-- 回填期间用**解码闸门**独占 `AVCodecContext`，避免和解码线程交叉 `send/recv`（问题文档第 12 条）；
-- 历史满时的淘汰策略必须保证"回填有进展"，否则会空转（问题文档第 11 条）。
-
-### 5.5 渲染
-
-- `QOpenGLWidget` + 三个 `GL_RED` 纹理（Y / U / V），片元着色器做 YUV→RGB 和滤镜；
-- **零拷贝上传**：`setPaint()` 只接管 `AVFrame` 引用，`paintGL()` 直接从 `frame->data[plane]` +
-  `linesize` 上传（行宽等于平面宽度时一次 `glTexSubImage2D`，有 padding 时逐行上传）；
-- **丢帧邮箱**：GUI 线程同一时刻只处理一帧（`beginPaint()/endPaint()`），GUI 忙的时候渲染线程直接丢帧，
-  免得事件队列里堆一堆带着整帧 buffer 的投递（问题文档第 14、15 条）；
-- 渲染线程和 GUI 线程之间用 `Qt::QueuedConnection` 投递，投递目标用 `QPointer` 保护。
-
-### 5.6 音频链路
-
-```
-AVPacket → avcodec 解码 → swresample 重采样(S16/48k/2ch)
-        → [1.0×] 直接入帧队列
-        → [变速] abuffer → atempo → abuffersink，输出按样本数重映射回内容 pts
-        → 播放线程 write 到 QAudioSink 的 QIODevice（push 模式）
-```
-
-- 音频时钟取自"声卡未播时长"，所以暂停必须用 `suspend()`、seek 后必须 `reset()` 丢掉残留；
-- 变速时重建 `atempo` 滤镜并复位 `swr`，否则切换倍速会有爆音 / 错位。
+1. **权威状态放本地，`PlayerContext` 只做单向广播。**
+   逐帧/暂停/seek 这些状态的"真值"在改它的那一层（`DemuxThread`、`Player` 自己的成员），
+   `PlayerContext` 是发给 UI 看的副本，**慢一个消息往返**，不能拿来做判断。
+2. **一次 seek 请求 → 恰好一条 `EVT_SEEK_DONE`。**
+   所有 seek 走 `Player::postSeek()` 这一个出口；进度条在落地前"钉住目标"，
+   用户连续操作期间 `SEEK_DONE` 不改进度条。
+3. **上屏有背压（在飞帧数 = 1）。**
+   渲染线程投递给 GUI 线程的帧，GUI 没消化完就**丢**，不排队 —— 否则一拖窗口就攒下几百 MB。
 
 ---
 
@@ -294,35 +235,47 @@ AVPacket → avcodec 解码 → swresample 重采样(S16/48k/2ch)
 ```text
 QtFFmpegPlayer/
 ├── README.md
-├── pictures/
-│   ├── OPlayer界面.png              # 主界面与按键说明
-│   └── OPlayer模型.png              # 线程与数据流模型
+├── .github/workflows/ci.yml          # Linux：构建 + 无头单测
+├── pictures/                         # 界面截图
 ├── docs/
-│   └── problems-and-solutions.md    # 开发中踩过的坑与排查过程（附录含后续规划）
-├── testData/                        # 第 8 节性能数据的原始采样记录（按指标分目录）
-├── scripts/
-│   └── build-release.ps1            # 一键打包免安装绿色版（构建 + windeployqt + zip）
-├── dist/                            # 打包输出（不入库）
+│   ├── problems-and-solutions.md     # 踩过的坑（现象→根因→解决），含 core 化 24~33
+│   ├── player-pusher-notes.md        # 推流器设计笔记（Q/A 形式）
+│   └── CORE-FORK.md                  # core 迁出 / SDK 化 的分叉约定
+├── scripts/build-release.ps1         # 一键打包免安装绿色版
+├── testData/                         # 性能测试的原始采样记录
+├── dist/                             # 打包输出（不入库）
 └── Player/QtPlayer/
     ├── CMakeLists.txt
-    ├── main.cpp
-    ├── player.{h,cpp,ui}            # 主窗口：状态机、定时器、输入、全屏/缩放
-    ├── demuxthread.{h,cpp}          # 解封装 + 异步 seek + 逐帧回填
-    ├── decodethread.{h,cpp}         # 解码基类：包队列、send/recv、编解码器生命周期
-    ├── videodecodethread.{h,cpp}    # 视频解码、seek 定位、历史回填解码
-    ├── videorenderthread.{h,cpp}    # 帧消费、节奏控制、同步、丢帧、逐帧步进
-    ├── audiothread.{h,cpp}          # 音频解码线程 + 播放线程 + 音频时钟
-    ├── framequeue.{h,cpp}           # 未来帧环形队列 + 历史帧窗口（逐帧核心）
-    ├── packetqueue.{h,cpp}          # 有界包队列（支持超时投递/中止）
-    ├── videowidget.{h,cpp}          # QOpenGLWidget：YUV 渲染 + 滤镜 + 丢帧邮箱
-    ├── audioplayer.{h,cpp}          # 音频输出抽象 + QAudioSink 实现（单例）
-    ├── ctrlbar.{h,cpp,ui}           # 底部控制栏
-    ├── topmenu.{h,cpp,ui}           # 顶部标题栏（无边框拖动）
-    ├── playlist.{h,cpp,ui}          # 播放列表
-    ├── myslider.{h,cpp}             # 支持点击跳转的进度条
-    ├── Basic.shader                 # GLSL（YUV→RGB + 滤镜）
-    ├── res.qrc / workBtnPNG/        # 资源与图标
-    └── build/                       # 本地构建产物（已在 .gitignore 里）
+    ├── CMakePresets.json
+    ├── cmake/FFmpeg.cmake            # ffmpeg_deps INTERFACE 目标（Win: 路径 / Linux: pkg-config）
+    ├── include/op/op_player.h        # SDK 的 C 接口草案（本仓库不编译，只是设计稿）
+    ├── core/                         # ── 内核：零 Qt ──
+    │   ├── framequeue.{h,cpp}        #   未来帧环 + 历史窗口（逐帧核心）
+    │   ├── packetqueue.{h,cpp}       #   有界包队列（超时投递 / abort）
+    │   ├── demuxthread.{h,cpp}       #   读包、异步 seek、逐帧回填
+    │   ├── decodethread.{h,cpp}      #   解码基类：send/recv、解码器生命周期
+    │   ├── videodecodethread.{h,cpp} #   视频解码 + 像素格式统一
+    │   ├── videorenderthread.{h,cpp} #   帧消费、节奏、同步、丢帧、逐帧步进
+    │   ├── audiothread.{h,cpp}       #   音频解码 + atempo 倍速 + 音频时钟
+    │   ├── frameconverter.{h,cpp}    #   swscale 统一成 YUV420P（加锁，跨线程共用）
+    │   ├── messagequeue.{h,cpp}      #   消息队列
+    │   ├── messageloopthread.{h,cpp} #   消息循环线程
+    │   ├── playercore.{h,cpp}        #   入口：postMessage / 事件回调 / start-stop
+    │   ├── playercontext.h           #   状态广播（只读给 UI）
+    │   ├── iaudiooutput.h            #   音频出口接口（platform 实现）
+    │   ├── log.h / perfclock.h       #   日志 / 纳秒时钟
+    ├── platform/
+    │   ├── audioplayer.{h,cpp}       #   QAudioSink 实现 IAudioOutput
+    │   └── videowidget.{h,cpp}       #   QOpenGLWidget：YUV 渲染 + 滤镜 + 丢帧邮箱
+    ├── app/
+    │   ├── main.cpp                  #   timeBeginPeriod(1) 等进程级初始化
+    │   ├── player.{h,cpp,ui}         #   主窗口：状态机、seek 收口、输入、全屏
+    │   ├── ctrlbar.{h,cpp,ui}        #   底部控制栏
+    │   ├── topmenu.{h,cpp,ui}        #   顶部标题栏
+    │   ├── playlist.{h,cpp,ui}       #   播放列表
+    │   └── myslider.{h,cpp}          #   支持点击跳转的进度条
+    ├── pusher/                       # op_pusher：采集 → 编码 → 封装 → 推流
+    └── tests/test_framequeue.cpp     # 逐帧状态机单测（默认不构建）
 ```
 
 ---
@@ -331,23 +284,24 @@ QtFFmpegPlayer/
 
 | 常量 | 值 | 位置 | 含义 |
 |---|---|---|---|
-| `FrameQueue::MAX_QUEUE_SIZE` | 16 | `framequeue.h` | 未来帧队列容量（背压上限） |
-| `FrameQueue::MAX_HISTORY_SIZE` | 48 | `framequeue.h` | 历史帧容量（能连续回退多少帧） |
-| `kRefillKeepFrames` | 16 | `videodecodethread.cpp` | 单次回填保留的帧数（要比历史容量小得多） |
-| `PUSH_TIMEOUT_MS` | 10 | `demuxthread.cpp` | 包投递超时（决定控制响应性） |
-| `SYNC_THRESHOLD` | 30 | `videorenderthread.cpp` | 音画同步阈值（ms） |
-| 回填跨度 | `(MAX_HISTORY_SIZE/2)·1000/fps`，夹在 `[500,5000]` ms | `demuxthread.cpp` | 回填时向后 seek 多远 |
-| 包队列上限 | ≥ 100 | `packetqueue.h` | 单流包缓冲 |
+| `FrameQueue::MAX_QUEUE_SIZE` | 16 | `core/framequeue.h` | 未来帧队列容量（背压上限） |
+| `FrameQueue::MAX_HISTORY_SIZE` | 48 | `core/framequeue.h` | 历史帧容量（能连续回退多少帧） |
+| `kRefillKeepFrames` | 16 | `core/videodecodethread.cpp` | 单次回填保留的帧数 |
+| `PUSH_TIMEOUT_MS` | 10 | `core/demuxthread.cpp` | 包投递超时（决定控制响应性） |
+| `SYNC_THRESHOLD` | 30 | `core/videorenderthread.cpp` | 音画同步阈值（ms） |
+| 回填跨度 | `(MAX_HISTORY_SIZE/2)·1000/fps`，夹在 `[500,5000]` ms | `core/demuxthread.cpp` | 回填时向后 seek 多远 |
+| `kSeekUiHoldMs` | 1500 | `app/player.cpp` | 进度条"钉住目标"的最长时间 |
+| `kSeekLockTimeoutMs` | 2000 | `app/player.cpp` | `SEEK_DONE` 丢失时的解锁兜底 |
 
-**内存账**：1080p 8bit YUV420P 单帧 ≈ 3.11MB；未来 16 帧 + 历史 48 帧 = 64 帧 ≈ **200MB**。
+**内存账**：1080p 8bit YUV420P 单帧 ≈ 3.11 MB；未来 16 + 历史 48 = 64 帧 ≈ **200 MB**。
 历史深度就是"内存 ↔ 后退距离"的取舍，改 `MAX_HISTORY_SIZE` 就能换。
 
 ---
 
 ## 8. 性能数据
 
-下面各表的实测值都在本机跑出来，原始采样记录放在 [`testData/`](testData/)，与各表一一对应，
-目录清单见 [8.6 原始测试数据](#86-原始测试数据)。
+> **这批数据是 core 化之前在同一台机器上测的**，core 化后没有重跑（线程壳、消息循环、像素格式链路都换了，
+> 数值可能略有出入）。原始采样记录仍在 [`testData/`](testData/)，与各表一一对应，方便复核。
 
 ### 8.1 测试环境
 
@@ -360,23 +314,19 @@ QtFFmpegPlayer/
 | Qt / FFmpeg | Qt 6.11 / FFmpeg 8.1（shared build） |
 | 构建 | MSVC 2022，Release，`/O2 /MD` |
 | 测试片源 | ① 1080p60 H.264 8Mbps（GOP≈2s，B 帧=3）② 4K60 HEVC ③ 720p60 H.264 ④ 纯音频（MP3/FLAC） |
-| 采样工具 | 任务管理器 / `typeperf` / `Get-Process` / 代码内 `QElapsedTimer` 打点日志 |
+| 采样工具 | 任务管理器 / `typeperf` / `Get-Process` / 代码内打点日志 |
 
 **测试条件与局限**
 
 - **延迟口径**：除「回填耗时」是代码内部打点（`doBackwardRefill()` 自身耗时）外，其余延迟类指标都是
   **端到端**——从界面按下按钮 / 拖动进度条开始计时，到画面真正更新为止，更贴近用户实际感受。
 - **跨指标可比性**：各指标来自不同采样轮次，并非同一次运行，跨行比较只能作粗略参考。
-  （例如「回填耗时」与「上一帧端到端」分别取自两批不同的连续回填，起始边界都不同。）
 - **内存有三种口径，跨表不要直接比**：§8.2「常驻内存（1080p）」是 1080p60 播放 60s 期间的
-  **私有内存峰值**（1080p60 683 MB、4K60 1503 MB，未播放基线 344 MB）；§8.5 是按 `MAX_HISTORY_SIZE` 三档各自单独运行测得的总量；
-  §8.4 的 270 → 264 MB 是同一配置下去掉 `setPaint` 的 `datas[]` 缓冲前后的对比。
-  三者的采样轮次、片源与统计口径都不同，只看各自表内的相对变化即可。
-- **4K 项已换片源重测**：早期一轮的片源分辨率与命名不符，导致「4K」的每帧 CPU 成本与 1080p60 持平、
-  不可比；重测后 4K60 为 **163.91%** vs 1080p60 **126.43%**（每帧 2.73 vs 2.11 %/帧，约 1.3×），
-  方向与预期一致，数据可用。
-- **显示器分辨率与本项无关**：解码始终按码流原始分辨率进行，1080p 屏只影响 GPU 侧的缩放与合成，
-  不计入 CPU；CPU 侧的纹理上传用的也是原始帧尺寸。
+  **私有内存峰值**；§8.5 是按 `MAX_HISTORY_SIZE` 三档各自单独运行测得的总量；
+  §8.4 的 270 → 264 MB 是同一配置下去掉 `datas[]` 缓冲前后的对比。
+- **4K 项已换片源重测**：早期一轮的片源分辨率与命名不符，重测后 4K60 为 **163.91%** vs
+  1080p60 **126.43%**（每帧 2.73 vs 2.11 %/帧，约 1.3×）。
+- **显示器分辨率与本项无关**：解码始终按码流原始分辨率进行，1080p 屏只影响 GPU 侧的缩放与合成。
 - **采样环境**：本机 12 核，未做 CPU 亲和绑定，也未清空后台程序；多核下 CPU% 可以超过 100%
   （100% = 占满一颗核）。
 
@@ -384,83 +334,83 @@ QtFFmpegPlayer/
 
 | 指标 | 我怎么测 | 自定目标 | 实测 |
 |---|---|---|---|
-| 首帧时间 | `playFile()` 入口打点 → 第一帧真正上屏（`paintGL` 首次拿到有效帧）。**含打开文件 + 建线程 + 首次解码**，所以量级比下面的 seek 大得多 | 80 ~ 250 ms | 121.4ms~200ms |
-| 平均 CPU（1080p60） | 稳定播放后采样：`typeperf "\Process(QtPlayer)\% Processor Time"`（多核可 >100%） | < 200%（12 核） | 126.43%（逐秒区间 95.6 ~ 153.2；25 个采样，实际跨度约 24s） |
-| 峰值 CPU（4K60） | 同上 | < 200%（12 核） | 187.49%（均值 163.91，67 个采样） |
-| 常驻内存（1080p） | 稳定后采样 60s 的私有工作集峰值：`(Get-Process QtPlayer).PrivateMemorySize64` | < 800 MB | 683.0 MB（未播放基线 343.9 MB） |
-| 常驻内存（4K60） | 同上 | < 2000 MB | 1503.0 MB（21 个采样，实际跨度约 20s） |
-| 长播内存曲线（2h） | 每 5min 采样一次私有工作集，看是否单调增长（泄漏判据） | 无增长趋势 | 无单调增长：私有 734.2 → 744.0 MB（后 60min 仅 +1.0 MB，峰值 747.9）；工作集反而 618.3 → 498.1 MB |
-| 屏幕渲染 FPS | 程序内已有的每秒统计（`paintGL`）：正常播放 / 拖动窗口时分别记 | ≥ 片源帧率 | 正常播放 60.06（59.70 ~ 60.46）；拖动窗口 40.35（最低 12.39） |
-| 丢帧率 | 在渲染线程“落后音频丢帧”的分支加计数器，统计播放 5min 的 `丢帧数 / 总帧数` | < 1% | 0%（36016 帧丢 0 帧） |
-| 音画偏差 | 每秒采样一次 `diff = videoPts - audioPts`（代码里已有打印位置，取消注释即可），记录均值与 `\|diff\|` 最大值 | `\|diff\| < 50ms` | 均值 23.5 ms、最大 44 ms（43 个视频帧样本） |
+| 首帧时间 | `playFile()` 入口打点 → 第一帧真正上屏。**含打开文件 + 建线程 + 首次解码** | 80 ~ 250 ms | 121.4ms~200ms |
+| 平均 CPU（1080p60） | 稳定播放后 `typeperf "\Process(QtPlayer)\% Processor Time"`（多核可 >100%） | < 200%（12 核） | 126.43% |
+| 峰值 CPU（4K60） | 同上 | < 200%（12 核） | 187.49%（均值 163.91） |
+| 常驻内存（1080p） | 稳定后 60s 私有工作集峰值 | < 800 MB | 683.0 MB（未播放基线 343.9 MB） |
+| 常驻内存（4K60） | 同上 | < 2000 MB | 1503.0 MB |
+| 长播内存曲线（2h） | 每 5min 采样一次私有工作集，看是否单调增长 | 无增长趋势 | 无单调增长：734.2 → 744.0 MB（后 60min +1.0 MB） |
+| 屏幕渲染 FPS | `paintGL` 每秒统计：正常播放 / 拖动窗口 | ≥ 片源帧率 | 正常 60.06；拖动 40.35（最低 12.39） |
+| 丢帧率 | 渲染线程"落后音频丢帧"分支加计数器，5min | < 1% | 0%（36016 帧丢 0 帧） |
+| 音画偏差 | 每秒采样 `videoPts - audioPts` | `\|diff\| < 50ms` | 均值 23.5 ms、最大 44 ms |
 
 ### 8.3 交互与逐帧指标
 
 | 指标 | 我怎么测 | 自定目标 | 实测 |
 |---|---|---|---|
-| Seek 延迟 P50 / P95 | 端到端：拖动进度条 / 点击跳转发起 seek 计时，到目标帧上屏（`requestSeekMs` → `repaintPts` 完成），随机 50 次 | P95 < 300 ms | P50 8.8 ms / P95 161.8 ms（均值 40.0 ms，最大 187.3 ms） |
-| 下一帧步进耗时 | 端到端：按 `F` 键 → 帧上屏 | < 30 ms | 均值 3.8 ms（2.4 ~ 5.3，9 次） |
-| 上一帧步进耗时（命中历史） | 端到端：按 `D` 键 → 帧上屏，命中历史不触发回填 | < 30 ms | 均值 3.2 ms（1.5 ~ 5.8，12 次） |
-| 回填耗时 | 内部打点 `doBackwardRefill()`：seek + 完整解码到边界 + 前插历史（**非端到端**，17 次连续回填） | < 300 ms | P50 109.3 ms / P95 164.8 ms（均值 105.0 ms） |
-| 上一帧端到端（首次跨边界） | 端到端：按 `D` 键 → 画面更新（含等待回填完成），6 次连续跨边界（与上一行是**不同批次**，两者不宜直接比大小） | < 200 ms | 均值 80.1 ms（57.4 ~ 112.1） |
+| Seek 延迟 P50 / P95 | 端到端：发起 seek → 目标帧上屏，随机 50 次 | P95 < 300 ms | P50 8.8 ms / P95 161.8 ms |
+| 下一帧步进耗时 | 端到端：按 `F` → 帧上屏 | < 30 ms | 均值 3.8 ms（2.4 ~ 5.3） |
+| 上一帧步进耗时（命中历史） | 端到端：按 `D` → 帧上屏，不触发回填 | < 30 ms | 均值 3.2 ms（1.5 ~ 5.8） |
+| 回填耗时 | 内部打点 `doBackwardRefill()`（**非端到端**） | < 300 ms | P50 109.3 ms / P95 164.8 ms |
+| 上一帧端到端（首次跨边界） | 端到端：按 `D` → 画面更新（含等待回填） | < 200 ms | 均值 80.1 ms（57.4 ~ 112.1） |
 
 ### 8.4 优化前后对比
 
 | 场景 / 指标 | 优化前 | 优化后 | 对应改动 |
 |---|---|---|---|
-| 1080p 播放 CPU | 无 | 126.43%（12 核均值，与 §8.2 同源） | 去掉 `setPaint` 每帧 3MB 的 memcpy，改零拷贝直传 |
-| 常驻内存 | 270MB | 264MB | 同上（去掉 `datas[]` 三块缓冲）。同一配置的前后对比，与 §8.2 / §8.5 **不是同一口径**，不跨表比 |
-| 拖动窗口时的渲染 FPS | 未单独记录 | 均值 40.35，最低 12.39（对照正常播放 60.06） | 丢帧邮箱（在飞帧数 = 1） |
+| 常驻内存 | 270 MB | 264 MB | 去掉 `setPaint` 每帧 3MB 的 memcpy |
+| 拖动窗口时的渲染 FPS | 未单独记录 | 均值 40.35，最低 12.39（正常 60.06） | 丢帧邮箱（在飞帧数 = 1） |
 | 松手后画面"追帧" | 会把积压的帧补播一遍 | 无 | 同上 |
 | 逐帧回退定位准确性 | 偏几帧 / seek 目标错误 | 帧级精确 | 完整解码定位 + 毫秒坐标系统一 |
 | 长时间连续 seek 稳定性 | 偶发卡死 | 无卡死 | 控制线程非阻塞投递 + 背压环看门狗 |
 
 ### 8.5 配置取舍（历史深度 ↔ 内存 / 可回退距离）
 
-> 估算公式：`内存 ≈ (16 + MAX_HISTORY_SIZE) × 单帧大小`，1080p 8bit YUV420P 单帧 ≈ 3.11 MB。
-> 末列是三档 `MAX_HISTORY_SIZE` **各自单独运行**测得的总量，与 §8.2 的 683 MB 不是同一次采样，不宜直接相比。
+> 估算公式：`内存 ≈ (16 + MAX_HISTORY_SIZE) × 单帧大小`。
+> 末列是三档**各自单独运行**测得的总量，与 §8.2 的 683 MB 不是同一次采样。
 
-| 配置 | `MAX_HISTORY_SIZE` | 内存上限（估算） | 连续可回退 | 程序运行实测内存 |
+| 配置 | `MAX_HISTORY_SIZE` | 内存上限（估算） | 连续可回退 | 实测内存 |
 |---|---|---|---|---|
-| 省内存 | 16 | ≈ 100 MB | 16 帧 | 540MB |
-| 默认 | 48 | ≈ 200 MB | 48 帧 | 634MB |
-| 深度回退 | 96 | ≈ 350 MB | 96 帧 | 781MB |
+| 省内存 | 16 | ≈ 100 MB | 16 帧 | 540 MB |
+| 默认 | 48 | ≈ 200 MB | 48 帧 | 634 MB |
+| 深度回退 | 96 | ≈ 350 MB | 96 帧 | 781 MB |
 
 ### 8.6 原始测试数据
 
-原始采样记录都在 [`testData/`](testData/) 下，按指标分目录存放，内容是采样工具直接输出的文本 / CSV，
-没有再加工，方便复核：
-
 | 目录 | 对应指标 | 内容 |
 |---|---|---|
-| `平均CPU 1080p60 12核 60s/` | 8.2 平均 CPU | `typeperf` 逐秒采样（时间戳, CPU%） |
-| `平均CPU  4K60 12核 60s/` | 8.2 峰值 CPU | 同上 |
-| `内存占用 1080p60  60s/`、`内存占用  4K60  60s/` | 8.2 常驻内存 | `Get-Process` 逐秒私有工作集（字节） |
-| `常驻内存 1080未播放/` | 8.2 常驻内存 | 未播放时的基线 |
-| `长播内存曲线（2h）/` | 8.2 长播内存曲线 | `mem_2h.csv`（附同数据的可读版 `mem.txt`）+ 采集脚本 `memwatch.ps1` |
-| `屏幕真实渲染FPS 1080p60/` | 8.2 屏幕渲染 FPS | `正常播放.txt` 与 `拖动窗口.txt` |
-| `丢帧率5mins/` | 8.2 丢帧率 | 周期打印的 `shown frames` / `lose frames` |
-| `音画偏差/` | 8.2 音画偏差 | 每个视频帧的 `videoPts` / `audioPts` / `diff` |
+| `平均CPU 1080p60 12核 60s/`、`平均CPU  4K60 12核 60s/` | 8.2 CPU | `typeperf` 逐秒采样 |
+| `内存占用 1080p60  60s/`、`内存占用  4K60  60s/`、`常驻内存 1080未播放/` | 8.2 内存 | `Get-Process` 逐秒私有工作集 |
+| `长播内存曲线（2h）/` | 8.2 长播 | `mem_2h.csv` + 可读版 + 采集脚本 |
+| `屏幕真实渲染FPS 1080p60/` | 8.2 渲染 FPS | 正常播放 / 拖动窗口 |
+| `丢帧率5mins/` | 8.2 丢帧率 | 周期打印的 shown / lose frames |
+| `音画偏差/` | 8.2 音画偏差 | 每帧 `videoPts` / `audioPts` / `diff` |
 | `交互与逐帧指标/` | 8.3 | seek / 逐帧 / 回填的 `[PERF]` 打点日志 |
 
 ---
 
 ## 9. 已知限制
 
-1. **还是软解**：硬件解码（DXVA2 / D3D11VA / MediaCodec）我还没接，高码率 4K 下 CPU 占用偏高；
-2. **时间轴原点**：进度条用"帧 pts / 容器 duration"算位置，没用 `AVStream::start_time` 归一化，
-   某些起点不为 0 的流（如部分 TS）会有固定的显示偏移；
-3. **VFR（可变帧率）**：回填跨度还是按 `avg_frame_rate` 估的，VFR 下不够准（可以用 `AVFrame::duration` 改进）；
-4. **跨线程 UI 通知**：还有个别信号可能在 demux 线程发射（问题文档第 16 条）；
-5. **字幕 / HDR 都没做**：字幕轨、10bit/HDR、以及色彩空间（BT.601/709、limited/full range）都还没处理；
-6. **平台验证**：Windows 与 Ubuntu 24.04 都已跑通；Linux 上仍有一个"打开文件偶发崩溃"
-   （QtMultimedia 音频端点，见 3.4 与问题文档第 23 条），且 Linux 侧性能数据尚未采集。
+1. **还是软解**：硬件解码（D3D11VA / MediaCodec）没接，高码率 4K 下 CPU 占用偏高；
+2. **时间轴原点**：进度条用"帧 pts / 容器 duration"，没用 `AVStream::start_time` 归一化，
+   某些起点不为 0 的流（部分 TS）会有固定显示偏移；
+3. **VFR（可变帧率）**：回填跨度按 `avg_frame_rate` 估，VFR 下不够准（可用 `AVFrame::duration` 改进）；
+4. **字幕 / HDR 都没做**：字幕轨、10bit/HDR、色彩空间（BT.601/709、limited/full range）都没处理；
+   目前像素格式统一到 YUV420P，10bit 会被降位；
+5. **Linux 有一个已知崩溃**：打开文件后崩在 QtMultimedia 音频端点（见问题文档第 23 条），
+   结论是等 `platform/` 换成自己的音频后端再看；Linux 侧性能数据也未采集；
+6. **内核要迁出**：`core/` 之后会移到 SDK 仓库，本仓库只保留一份拷贝用于回落 ——
+   见 [`docs/CORE-FORK.md`](docs/CORE-FORK.md)；
+7. **单测默认不构建**：本仓库只修 bug，`OP_BUILD_TESTS` 默认 OFF（CI 里打开）。
 
 ---
 
-## 10. 参考资料与延伸阅读
+## 10. 文档与参考
 
-- [开发问题与解决方案](docs/problems-and-solutions.md)：开发中真实踩到的问题与排查过程
+- [开发问题与解决方案](docs/problems-and-solutions.md)：真实踩到的问题（现象 → 排查 → 根因 → 解决），
+  第 24~33 条是 core 化那一轮的坑（线程壳、异步广播、消息所有权、时钟分辨率、seek 串行化、像素格式）
+- [推流器设计笔记](docs/player-pusher-notes.md)：`op_pusher` 的取舍与问答
+- [Core 迁出 / SDK 化](docs/CORE-FORK.md)：分叉约定、回落流程、C 接口草案说明
 - FFmpeg 官方文档：`avformat` / `avcodec` / `avutil`（时间基、`av_seek_frame`、`AVFrame` 引用计数）
 - ffplay（FFmpeg 自带参考播放器）：`frame_queue` 的环形预分配与 `keep_last` 设计
 - mpv issue #4019：关于"逐帧后退为什么慢、以及缓存策略的取舍"
