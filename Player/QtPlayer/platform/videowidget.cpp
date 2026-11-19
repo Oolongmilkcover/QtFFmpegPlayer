@@ -6,7 +6,6 @@
 #include<sstream>
 #include<iostream>
 #include<QFile>
-#include "core/perfclock.h"
 #include <QElapsedTimer>
 extern "C" {
 #include <libavutil/frame.h>
