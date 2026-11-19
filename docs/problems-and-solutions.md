@@ -23,8 +23,9 @@
 - 16. 从工作线程 emit 信号直连到 UI
 - 17. 网络流导致退出卡死（av_read_frame 阻塞）
 - 18~23. Linux 移植（工具链 / 平台约定 / 一个"不是代码问题"的问题）
+- 24~33. Core 化（零 Qt 内核）：线程壳、异步广播、消息所有权、时钟分辨率、seek 串行化、解码闸门、像素格式
 - 附. 单测与 CI（工程化）
-- 附. 未来的 core（零 Qt 内核）
+- 附. Core 化结果与代价（零 Qt 内核）
 - 附. 移植 Android
 - 附. 后续规划（P0 ~ P4）
 
@@ -546,6 +547,206 @@ qmake -query QT_VERSION               # 那份 Qt 的版本
 
 ---
 
+## 24. QThread 子类拆成「普通类 + std::thread」后，线程生命周期没人管了
+
+**现象**：把 `DemuxThread` / 解码 / 渲染 / 音频线程从 `QThread` 改成自己持 `std::thread` 之后，
+第一次运行直接崩在启动路径上（消息循环对象建了却没起/没人回收）；改好之后又在关窗时卡住。
+
+**根因**：`QThread` 时代"对象就是线程"—— `start()` / `wait()` / `quit()` 都是基类给的，析构时会等线程结束。
+换成 `std::thread` 之后，这几件事全变成我的责任，漏一件就是 `std::terminate` 或者永久阻塞：
+
+1. `std::thread` 析构时如果还 `joinable()` → **直接 terminate**，所以每个线程类的析构里都得 `stop()`；
+2. `t = std::thread(...)` 赋给一个还 joinable 的 `t` → 同样 terminate。所以 `start()` 必须先判
+   `m_running`（已在跑就返回），并把上一轮 join 掉再赋新的；
+3. `join()` 之前必须先「置退出标志 + 唤醒队列」，否则线程还阻塞在 `pop()` / `getWritable()` 上，
+   join 会一直等（`MessageQueue::abort()`、`FrameQueue::abort()` 就是干这个的）；
+4. **停止顺序有依赖**：`DemuxThread::close()` 必须**先 join demux 线程、再拆 AV 线程** ——
+   `doSeek()` / `doBackwardRefill()` 是在 demux 线程里直接访问解码器上下文的，反过来就是 UAF。
+
+**解决**：每个线程类统一成 `start()` / `stop()` 成对、析构里兜一次 `stop()`；`stop()` 固定三步
+「置标志 → abort 队列 → join」；跨对象的停止顺序直接写进注释（`demuxthread.cpp` 的 `close()` 那段）。
+
+**认知点**：`std::thread` 不替你兜任何东西；"关窗卡住"十有八九是「join 等一个永远不会醒的线程」。
+
+---
+
+## 25. 异步广播当状态源：一个根因，五种表现
+
+**现象**（core 化之后陆续冒出来，一开始完全看不出是同一个问题）：
+- 进过逐帧后按播放/暂停/停止 → 直接崩（栈溢出）；
+- 点过"停止"再打开文件 → 黑屏无声，**再打开一次又正常**；
+- 连按快进后要按两次播放才开始播；
+- 连点倍速，标签从 1.6 直接跳到 1.8；
+- 打开新文件的头几帧，界面还在用上一个文件的状态（流媒体按钮、纯音频黑屏）。
+
+**根因**：core 化时用 `PlayerContext` 做「core → UI」的广播：core 里的线程 push
+`CTX_IS_PAUSE` / `CTX_SEEKING` / `CTX_SPEED` 这类消息，由消息循环写进 ctx，UI 再读。
+问题是 **ctx 慢一个消息往返**，而代码里到处拿它当"当前状态"用：
+
+1. `endFrameStep()` 和 `setPause()` 互相用 `ctx.isFrameStep()` 判断要不要退出逐帧，
+   ctx 还没被消费 → 两边永远认为"还在逐帧" → 无限互递归到栈溢出；
+2. `openFile()` 里 push 的 `CTX_IS_EXIT=0` 还排在队列里，`dt.start()` 已经把线程拉起来了 →
+   线程第一句 `shouldExit()` 读到旧值 → 起来就退出；
+3. seek 结束要恢复"暂停/播放"，采样的是 `ctx.isPause()`，而 seek 期间它会因为"先停生产"被临时置 1；
+4. 倍速标签在 150ms 一次的 `EVT_POSITION` 里用 `ctx.getSpeed()` 刷新，比本地慢一拍；
+5. `playFile()` 里同步读 ctx 判断"是不是流媒体/有没有视频"，读到的其实是上一个文件。
+
+**解决**：把状态分成两类，写死规则：
+- **权威状态留在"改它"的那一层**，同步读写：`DemuxThread::m_isFrameStep` / `m_isPause`、
+  `Player::m_isPause` / `m_seekTargetMs` / `m_canSeek`；
+- **`PlayerContext` 只做单向广播**，只给 UI 展示，core 内部谁都不许拿它做判断
+  （`demuxthread.h` 里这几个成员的注释写明了这条规矩）。
+
+`endFrameStep()` 用 `m_isFrameStep.exchange(false)` 进门：既判断"本来在不在逐帧"，又顺手把
+防重入做了 —— 它后面还要调 `requestSeekMs()` / `setPause()`，两者看到 `false` 就不会再回来。
+
+**认知点**：**异步广播不能当状态源**。要么同步（原子量 / 本地成员），要么把"等它生效"写进流程
+（比如 seek 改成"一次请求恰好一条 `SEEK_DONE`"）。
+
+---
+
+## 26. 消息对象的生命周期：谁 free
+
+**现象**：`getMsg()` 的兜底分支里写了 `delete msg.obj;`（`obj` 是 `void*`）—— 编译能过，
+但那是未定义行为；同时 `PlayerCore` 里还有个 `needFree` 标志，写了半天没人看。
+
+**根因**：消息跨三层（`postMessage` → 队列 → 消息循环），`obj` 是 `void*` + 一个 `free_l` 回调，
+所有权说不清。当时想"把所有权转给 UI"，于是有了 `needFree`（实际从没实现）。
+
+**解决**：定死契约 —— **谁 new 谁给 `free_l`；消息循环在 handler 返回后统一释放；handler 只能同步拷贝**。
+- `MessageLoopThread::loop()`：`m_handler(msg)` 之后无条件 `if (msg.obj && msg.free_l) free_l(obj);`；
+- `Player::onEVT_ERROR()` 里用 `QString::fromStdString(*errStr)` 当场拷一份，不存指针；
+- `getMsg()` 那个"有 obj 没 free_l"的兜底分支改成**只报错、不释放**：类型和来源都不知道，
+  `delete` 一个 `void*` 只调 `operator delete`、不调析构，对非 `new` 出来的指针直接踩内存。
+
+**认知点**：`void*` + 回调的"手动所有权"最容易出事；能不让它跨三层就别跨。
+
+---
+
+## 27. 一个 `isExit` 管两件事
+
+**现象**：点"停止"之后再打开文件 → 界面显示已就绪、进度条 0、黑屏没声音；**再打开一次又正常**。
+
+**根因**：`shouldExit()` 把「demux 自己的停止标志」和「`PlayerContext` 的整体退出标志」或在一起，
+而 `openFile()` / `close()` 又在这条链路上来回写 `CTX_IS_EXIT`：`close()` push 1、`openFile()` push 0，
+两条消息都排在队列里，可 `dt.start()` 已经把新线程拉起来了 → 线程读到的是**上一个**值 1 →
+`run()` 第一句就返回；等消息循环把 0 消费掉时，线程早没了。
+
+**解决**：`shouldExit()` 只认 demux 自己的 `m_isExit`（`close()` 里同步置位，不依赖消息）；
+`ctx.isExit` 只留给"整体退出"，并且 `PlayerCore::stop()` 里直接置上 —— 顺手还能通过中断回调
+打断正在 `avformat_open_input` 的线程（网络流打开时那一步可能阻塞几秒到几十秒）。
+
+**认知点**：**一个标志管两件事，就会在"两件事不同步"的窗口里出错**；这个窗口通常只有几微秒到几毫秒，
+但它的表现形式（黑屏、要按两次、偶发）会把你带到完全不相干的地方去查。
+
+---
+
+## 28. 删掉一个"空转"的 16ms 定时器，播放开始卡
+
+**现象**：core 化清理死代码时，`Player` 里那个 16ms 的 `startTimer(16)` 看着什么都没干
+（`timerEvent` 里对应逻辑早被注释光了），删掉之后 1080p30 的视频开始周期性卡顿、声音也断续。
+
+**排查**：加两行打点，量「`sleep_for(1ms)` 实际睡了多久」—— 有定时器时约 1ms，没有时约 15.6ms。
+
+**根因**：Qt 的 Windows 事件分发器对 **interval ≤ 20ms** 的定时器会改用多媒体定时器 `timeSetEvent()`
+（`qeventdispatcher_win.cpp` 里 `calculateNextTimeout` + `registerTimer`），它的副作用是把
+**进程的时钟分辨率**从 15.625ms 抬到 1ms。而播放链路里到处是 `sleep_for(1ms)`：
+`DemuxThread::run()` 每个包末尾 `sleepMs(1)`、音频线程等声卡空间、渲染线程 `sleepUntil()`。
+分辨率一回落，demux 吞吐上限就从 1000 包/秒掉到 **约 64 包/秒**，而 1080p30 + AAC48k 需要
+**约 77 包/秒**（30 视频 + 47 音频）→ 解码器周期性饿死 → 卡顿。
+
+**解决**：不再依赖"某个定时器碰巧存在"，在 `main()` 里显式 `timeBeginPeriod(1)` / `timeEndPeriod(1)`，
+`CMakeLists.txt` 给 Windows 补 `winmm.lib`；注释里把因果链写下来，免得下次又被当死代码删掉。
+
+**认知点**：**"看起来没用的代码"可能正在提供环境副作用**；Windows 上 `Sleep(1)` 的精度不是常量。
+
+---
+
+## 29. Seek 的"我在 seek"只能有一个判断点
+
+**现象**：连按快进时进度条在"目标位置"和"当前时钟"之间来回跳；偶尔最后一下 seek 丢了（松手后落点不对）；
+拖完进度条松手还会回跳一下。
+
+**根因**：三个地方各自 `postMessage(CMD_SEEK)`（前沿立即生效、去抖尾部补发、拖进度条），
+尾部那条既没检查"上一次还在 seek"、也没置位，串行化形同虚设；进度条则同时被"用户目标"（按键时写）
+和"真实时钟"（150ms 一次）写，两个数不一样就一直跳。
+
+**解决**：
+- 所有 seek 请求收口到一个 `postSeek()`：刷新进度条 → 记录目标 → 置 `m_canSeek=false` → 投递；
+- 进度条"钉住目标"：从发起到落地（或超时）之间，`EVT_POSITION` 不许改它；
+- 用户在连续按（1.2s 窗口）时，`SEEK_DONE` 只更新内部位置、**不碰进度条** ——
+  否则每个按键都会被"精准落点"再写一次，看起来就是抖；
+- `m_canSeek` 加 2s 超时兜底；core 侧保证「一次请求恰好一条 `SEEK_DONE`」（早退路径也要补）。
+
+**认知点**：同一个语义（"我正在 seek"）只留一个判断点；UI 上的"目标"和"时钟"是两套数，必须明确谁优先。
+
+---
+
+## 30. 纯音频 seek 不能在消息循环线程里碰 `AVFormatContext`
+
+**现象**：放 MP3 拖一下进度条，之后没声音，整个控制栏（连顶栏的关闭按钮）永久变灰。
+
+**根因**：为了"快"，纯音频 seek 在 `requestSeekMs()` 里直接 `av_seek_frame` / `avformat_flush` ——
+而这时 demux 线程正在同一个 `AVFormatContext` 上 `av_read_frame`。FFmpeg 的 format context 不是线程安全的；
+更糟的是那条分支只发了 `EVT_SEEK_DONE`，**忘了发 `CTX_IS_SEEKING=0`**，于是 `run()` 每一轮都以为
+"还在 seek"，反复进 `doSeek()`。
+
+**解决**：纯音频 seek 也搬进 `doSeek()`，由 demux 线程执行（和视频走同一套流程）；
+补齐 `CTX_IS_SEEKING=0` 与 `EVT_SEEK_DONE`。
+
+**认知点**：**"顺手省一次线程切换"最容易破坏线程归属**。一旦某个 FFmpeg 对象规定了"只被一个线程碰"，
+任何"就这一次"的特例都会变成偶发崩溃。
+
+---
+
+## 31. 锁保护的是"调用"，不是"状态机"
+
+**现象**：seek 落点偶尔偏一帧；逐帧回填时画面串。
+
+**根因**：`repaintPts()`（demux 线程）和 `run()`（解码线程）都会对同一个 `AVCodecContext` 做 send/recv。
+`DecodeThread::m_mutex` 只保证**单次调用**不并发，保证不了「一个包 send 完、它产出的帧由谁 recv」——
+于是目标帧被另一条线程取走。
+
+**解决**：加 `m_decodeGate`，把"一整轮 send + recv"包起来，`run()` / `repaintPts()` / `refillBackward()`
+三处都拿它；并把"为什么不会死锁"写进注释（持闸门期间只做非阻塞操作，会阻塞的 `getWritable()`
+只在解码线程里调，而 seek 之前已经 `parkRenderer()` + `setPause(true)`）。
+
+**认知点**：**锁保护的是"调用"，不是"状态机"**；send/recv 这种成对的 API 必须整段串行。
+
+---
+
+## 32. 像素格式：要么在入口统一，要么每个消费方各写一遍
+
+**现象**：换个非 `yuv420p` 的片源（手机录像常见的 NV12、JPEG 范围的 `yuvj420p`、10bit）就花屏或黑掉。
+
+**根因**：`VideoWidget::paintGL()` 写死"Y/U/V 三个平面 + `GL_RED`"，只判了 `data[0]`；
+而解码器实际输出什么格式由码流决定，`data[2]` 完全可能是空指针 → 给 `glTexSubImage2D` 传空指针。
+
+**解决**：`FrameConverter`（`sws_scale`）收进 `core/`，并且**每条产出帧的路径**都过一遍：
+解码主循环、seek 落点、逐帧回填（这条最开始漏了，回退时仍会把非 420p 帧送上屏）。细节：
+- 上下文按**每帧真实的 `frame->format` / 尺寸** `ensure()` —— `codecpar->format` 只是"提议"，
+  解码器实际输出可能不一样（`yuvj420p` / 硬解 / 10bit）；
+- `SwsContext` 加锁：`run()`（解码线程）和 `repaintPts()`（demux 线程）共用同一个转换器；
+- 上屏前再校验一次格式/平面，不匹配就丢帧 + 打日志，而不是让 GL 踩空指针。
+
+**认知点**：格式契约放"入口统一"最省事；放消费方各写一遍，迟早漏一条路径（我这里漏的就是回填）。
+
+---
+
+## 33. 别在"周期性回调"里写"非周期性状态"
+
+**现象**：连点倍速，标签从 1.6 直接跳到 1.8，中间那档像是被吞了。
+
+**根因**：150ms 一次的 `EVT_POSITION` 回调里顺手 `setSpeedLabel(ctx.getSpeed())`。
+ctx 比本地慢一拍，于是刚点出来的 1.7 被上一次的 1.6 顶掉，再点一下直接到 1.8。
+
+**解决**：标签只由用户动作（`changeSpeed()`）改，且用本地算出来的值；下发用四舍五入
+（`qRound(speed*10)`）而不是 `double → int` 截断（0.1 累加会出现 `1.6999999999999997` 这种值）。
+
+**认知点**：周期性回调（进度、状态轮询）只该写"周期性数据"；把用户动作的结果塞进去，就一定会和用户操作抢。
+
+---
+
 ## 附. 单测与 CI（工程化）
 
 这一块不是"修 bug"，但它是**敢重构的前提**：逐帧那块是全项目最绕的地方（未来环 + 历史 deque + 游标 + 回填坐标），
@@ -598,35 +799,42 @@ ctest --test-dir build -R framequeue --repeat until-fail:50    # 抓偶发
 
 ---
 
-## 附. 未来的 core（零 Qt 内核）
+## 附. Core 化结果与代价（零 Qt 内核）
 
-这是 P2 的主体，先把边界和判据写在这里，做的时候直接往下填。
+这是 P2 的主体。下面这份最早是**计划**（写清了边界和判据），现在补上**落地结果**和真实代价。
 
-**目标**：demux / decode / 帧队列 / 音画同步这些**逻辑**完全不依赖 Qt，只用 C++ 标准库 + FFmpeg；
-线程、窗口、GL、音频设备这些**平台相关**的东西收进 `platform` 层，对外只暴露 `api` 层的稳定接口。
+**目标**（没变）：demux / decode / 帧队列 / 音画同步这些**逻辑**完全不依赖 Qt，只用 C++ 标准库 + FFmpeg；
+线程、窗口、GL、音频设备这些**平台相关**的东西收进 `platform` 层。
 
 **判据（可以客观检查，不靠感觉）**：`core/` 目录下 grep 不到任何 `#include <Q...>`，也不链接 Qt 的库。
+> 现在这条判据**已经成立**：`core/` 全零 Qt；Qt 只剩在 `platform/`（`QAudioSink`、`QOpenGLWidget`、`QWidget`）
+> 和 `app/`（窗口、控件、事件）。`op_pusher` 更是完全独立的零 Qt 可执行文件。
 
-**现在的耦合现状（起步点）**：
+**替换清单（计划 → 实际做法）**：
 
-| 文件 | 依赖的 Qt |
-| --- | --- |
-| `audiothread.h` | 零 Qt 头（已经是"纯"的） |
-| `framequeue.h` | 只用了 `QObject`（其实并不需要） |
-| `demuxthread.h` | `QThread` + `QSet` |
-| `decodethread.h` / `videorenderthread.h` | `QThread`（+ `QElapsedTimer`） |
-| `videodecodethread.h` / `audioplayer.h` | `QObject` |
-| `perfclock.h` | `QtGlobal` / `QDebug`（只是打日志） |
+| 原计划 | 实际做法 | 踩到的坑 |
+| --- | --- | --- |
+| `QThread` → `std::thread` | 每个线程类自己持 `std::thread` + `start()/stop()`，析构里兜一次 `stop()` | **24**（生命周期/停止顺序） |
+| `QSet` → `std::unordered_set` | 纯音频格式表用 `std::set<std::string>` | — |
+| `QElapsedTimer` / `qDebug` | `perfclock.h`（steady_clock 纳秒）+ `core/log.h`（ostringstream + 单行加锁） | 见 §19 / 推流笔记 Q46 的 `/utf-8` |
+| 跨线程通知改显式队列 | `MessageQueue` + `MessageLoopThread` + `PlayerContext` 广播 | **25 / 26 / 27**（异步广播、所有权、一旗两用） |
+| 统一时间基准 | `perfNowNs()` | **28**（Windows 时钟分辨率） |
 
-**要替换的点**：
-- 线程壳：`QThread` → `std::thread` + 自己的停止/唤醒原语（`std::condition_variable`）
-- 容器：`QSet` → `std::unordered_set`
-- 时钟与日志：`QElapsedTimer` → `std::chrono`；`qDebug` → 自己的日志回调
-- 跨线程通知：从"依赖 AutoConnection 的隐式判断"改成**显式队列投递**（问题 16 那条的落地）
-- 时间基准：统一到一个 `steady_clock` 纳秒源（`perfclock.h` 已经是这个方向）
+**顺带被这次重构"暴露出来"的老问题**（原来被 Qt 的隐式行为盖住了）：
+- seek 的串行化与进度条"目标 vs 时钟"（**29**）；
+- 纯音频 seek 的线程归属（**30**）；
+- 解码器 send/recv 必须整段串行（**31**）；
+- 像素格式契约（**32**）；
+- 周期性回调里写非周期状态（**33**）。
 
-**推进顺序**：先拿已经有单测的 `framequeue` / seek 状态机开刀 → 再换 `demuxthread` 的线程壳 →
-最后才是渲染和音频的 `platform` 后端。
+**收益**（不是空话）：
+- 最容易出并发 bug 的两块（逐帧状态机、seek 串行化）现在能脱离 Qt 单独想清楚，单测也只依赖 core；
+- `op_pusher` 复用同一套思路（纯 C++、零 Qt），反过来验证了"core 零 Qt"不是口号；
+- `platform/` 的边界清楚之后，换音频后端（Android 的 `Oboe`）、换渲染后端（`EGL` / `Surface`）只是加一个实现。
+
+**代价（一句话）**：
+> **把"框架替你做的事"接过来时，最容易被忽略的不是编译错误，而是那些"以前碰巧成立"的时序假设。**
+> 24~33 里有一半以上属于这一类。
 
 ---
 
@@ -666,8 +874,9 @@ ctest --test-dir build -R framequeue --repeat until-fail:50    # 抓偶发
 - [ ] 跑通一条 GStreamer pipeline，记录它与 FFmpeg 在抽象上的差异
 
 **P2 · 引擎 SDK 化 + 硬解（12 月 ~ 1 月）**
-- [ ] 内核与 Qt 解耦：`core`（零 Qt 依赖）/ `platform`（IAudioSink、IRenderTarget、时钟）/ `api`（稳定的 C 接口）
-      —— 边界、现状与推进顺序先写在「附. 未来的 core（零 Qt 内核）」里
+- [x] 内核与 Qt 解耦：`core`（零 Qt 依赖）+ `platform`（`IAudioOutput` / `VideoWidget`）+ `MessageQueue`/`PlayerCore`
+      —— 已完成，结果与代价见「附. Core 化结果与代价」，落地过程踩的坑见 **24~33**
+- [ ] 稳定的 `api` 层（C 接口）：现在 core 的入口还是 `PlayerCore` 这个 C++ 类，还没做成对外 ABI 稳定的 C 接口
 - [ ] 硬件解码 D3D11VA，统计开启前后 CPU 与内存
 - [ ] 零拷贝通路：解码帧直接进 GPU（桌面 SharedTexture → 移动 Surface / DMA-BUF）
 
