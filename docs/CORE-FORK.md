@@ -7,9 +7,14 @@
 
 | 项 | 值 |
 |---|---|
-| 提交 | `028c226` + 未提交的「`op_core` 库目标」改动 |
-| tag | `git tag core-fork-v1 && git push origin core-fork-v1`（提交之后打） |
-| 备份 | `D:\桌面\QtPlayer-仓库备份-2026-11-19\`（完整历史 bundle + 源码 zip + 恢复说明） |
+| 本仓库分叉点 | `11187c3`（v4.0 tag）+ 之后的 `op_core` 库目标改动 |
+| **SDK 仓库** | https://github.com/Oolongmilkcover/op-SDK （原名 `op-core`，2026-11-20 改名） |
+| **迁出提交** | `2c0c91d refactor: 迁移最新内核…仓库定位收敛为 SDK`（2026-11-20） |
+| 备份 | 已按要求删除（`D:\桌面\QtPlayer-仓库备份-2026-11-19`） |
+
+> **改名影响**：GitHub 改名后旧地址通常还能靠 301 重定向访问，但依赖重定向不稳妥 ——
+> `op-SDK` 本地的 `origin` 已从 `op-core.git` 改为 `op-SDK.git`，并验证过 `ls-remote` 正常。
+> 其它地方（submodule、CI、文档）如果引用过旧名，都要一起改。
 
 ## 2. 本仓库今后的规矩
 
@@ -34,19 +39,23 @@
 - 删掉了 `playercore.h` 里两个"只有声明、没有实现"的接口
   （`setAudioPlayCallBack` / `setVideoPlayCallBack`），谁调谁链接失败，属于历史遗留。
 
-## 4. 迁出时带走什么
+## 4. 迁出时带走什么（2026-11-20 已完成）
 
 | 目录 / 文件 | 处理 |
 |---|---|
-| `Player/QtPlayer/core/**` | **原样带走**（零 Qt、零平台分支，已核实） |
-| `Player/QtPlayer/tests/test_framequeue.cpp` | 带走（本来就是 headless，不建窗口） |
-| `Player/QtPlayer/cmake/FFmpeg.cmake` | 参考后重写（现在这份是给 QtPlayer 用的） |
-| `Player/QtPlayer/platform/**`、`app/**` | **不带走**（Qt 壳，留在本仓库） |
-| `docs/problems-and-solutions.md` | 建议复制一份带走（24~33 条全是 core 的坑） |
+| `Player/QtPlayer/core/**` | ✅ 已带走（27 个文件，零 Qt、零平台分支） |
+| `Player/QtPlayer/tests/**` | ✅ 已带走（headless，不建窗口） |
+| `Player/QtPlayer/include/op/op_player.h` | ✅ 已带走（C 接口设计稿） |
+| `Player/QtPlayer/cmake/FFmpeg.cmake` | ✅ 已带走并适配（保留 `FFMPEG_PATH` / pkg-config 两条路） |
+| `Player/QtPlayer/platform/**`、`app/**` | ❌ 不带走（Qt 壳，留在本仓库）—— 顺手把 SDK 仓库里那份旧的 Qt 壳也删了 |
+
+> **本仓库仍然保留 `core/`**：它要用来构建 QtPlayer（CI 也只 clone 本仓库）。
+> 也就是说现在是「SDK 仓库是开发源 + 本仓库一份快照」，靠第 6 节的手动回落同步。
+> 等 SDK 的 C 接口稳定，再改成 submodule / `add_subdirectory` 消费，并把这份快照删掉。
 
 ## 5. 新仓库要补的（本仓库不做）
 
-1. **唯一的公开头** `include/op/op_player.h`（草案已放在本仓库 `include/op/op_player.h`）；
+1. **唯一的公开头** `include/op/op_player.h`（设计稿已在 SDK 仓库里）；
 2. 门面实现（pimpl 包住 `PlayerCore` + `PlayerContext`，把内部全藏起来）；
 3. **音频出口从 push 改成 pull**：`op_audio_read(buf, cap)`。
    桌面的 `IAudioOutput` 继续存在（Qt 播放器用），但 C 接口必须能"被拉" ——
@@ -54,6 +63,12 @@
 4. **`op_open` 支持文件描述符**：鸿蒙 picker 给 URI、安卓给 `content://`，NDK 侧拿到的是 fd。
    只有路径参数的话，两个平台都要在外面"先拷进沙箱"；
 5. 打包：CMake `install(TARGETS op_core ...)` + 版本号 + 许可说明（FFmpeg 是 LGPL）。
+
+### 对接入口
+
+新仓库根目录有 **`AGENTS.md`** —— 那是写给"下一个接手这个仓库的 AI 助手"的作业说明
+（当前状态、硬约束、第一阶段任务与验收）。在新对话里只要说"先读 AGENTS.md"即可。
+分阶段的计划与验收标准在 `docs/SDK-PLAN.md`。
 
 ## 6. 回落（backport）流程
 
